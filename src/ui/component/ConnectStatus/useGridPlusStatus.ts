@@ -1,14 +1,22 @@
 import React from 'react';
 import { useWallet } from '@/ui/utils';
 import { useInterval } from 'react-use';
+import { useTranslation } from 'react-i18next';
 
 export const useGridPlusStatus = () => {
   const wallet = useWallet();
   const [isConnect, setIsConnect] = React.useState(false);
   const getConnectStatus = () => {
-    wallet.gridPlusIsConnect().then((res) => setIsConnect(!!res));
+    wallet
+      .gridPlusIsConnect()
+      .then((res) => setIsConnect(!!res))
+      .catch(() => {
+        // ignore error log
+      });
   };
   const [connectLoading, setConnectLoading] = React.useState(false);
+
+  const { t } = useTranslation();
 
   React.useEffect(() => {
     getConnectStatus();
@@ -38,7 +46,9 @@ export const useGridPlusStatus = () => {
   };
 
   const content = React.useMemo(() => {
-    return isConnect ? 'GridPlus is connected' : 'GridPlus is not connected';
+    return isConnect
+      ? t('component.ConnectStatus.gridPlusConnected')
+      : t('component.ConnectStatus.gridPlusNotConnected');
   }, [isConnect]);
 
   return {

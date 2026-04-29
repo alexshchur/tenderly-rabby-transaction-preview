@@ -4,11 +4,13 @@ import {
   permissionService,
   keyringService,
   preferenceService,
-  contextMenuService,
 } from 'background/service';
 import providerController from './controller';
 import { findChainByEnum } from '@/utils/chain';
 import { appIsDev } from '@/utils/env';
+import wallet from '../wallet';
+import { metamaskModeService } from '@/background/service/metamaskModeService';
+import { ProviderRequest } from './type';
 
 const networkIdMap: {
   [key: string]: string;
@@ -20,9 +22,13 @@ const tabCheckin = ({
   },
   session,
   origin,
+  isFromDesktopDapp,
 }) => {
-  session.setProp({ origin, name, icon });
-  contextMenuService.createOrUpdate(origin);
+  session.setProp({ origin, name, icon, isFromDesktopDapp });
+  const site = permissionService.getSite(origin);
+  if (site) {
+    permissionService.updateConnectSite(origin, { ...site, icon, name }, true);
+  }
 };
 
 const getProviderState = async (req) => {
@@ -74,18 +80,62 @@ const providerOverwrite = ({
 };
 
 const hasOtherProvider = () => {
-  const prev = preferenceService.getHasOtherProvider();
   preferenceService.setHasOtherProvider(true);
   const isRabby = preferenceService.getIsDefaultWallet();
-  if (!prev) {
-    contextMenuService.init();
+  if (wallet.isUnlocked()) {
+    setPopupIcon(isRabby ? 'rabby' : 'metamask');
   }
-  setPopupIcon(isRabby ? 'rabby' : 'metamask');
   return true;
 };
 
 const isDefaultWallet = ({ origin }) => {
   return preferenceService.getIsDefaultWallet(origin);
+};
+
+const getProviderConfig = ({ origin }: { origin: string }) => {
+  const rdns = permissionService.getSite(origin)?.rdns;
+  const isMetamaskMode = metamaskModeService.checkIsMetamaskMode(origin);
+  return {
+    rdns,
+    isMetamaskMode,
+  };
+};
+
+const resetProvider = ({ origin }: { origin: string }) => {
+  const site = permissionService.getSite(origin);
+  if (site) {
+    permissionService.setSite({ ...site, rdns: undefined });
+  }
+};
+
+const openInDesktop = async (req: ProviderRequest) => {
+  const origin = req.session?.origin || req.origin;
+
+  const params: { address: string } = req.data?.params?.[0] || {};
+
+  if (
+    !origin ||
+    !['https://debank.com', 'https://www.debank.com'].includes(origin)
+  ) {
+    return;
+  }
+
+  if (!keyringService.isUnlocked()) {
+    wallet.openInDesktop(`/unlock?address=${params.address || ''}`);
+    return;
+  }
+  if (params.address) {
+    const account = await wallet.getAccountByAddress(params.address);
+    const currentAccount = preferenceService.getCurrentAccount();
+    if (
+      account &&
+      currentAccount &&
+      account.address?.toLowerCase() !== currentAccount.address.toLowerCase()
+    ) {
+      preferenceService.setCurrentAccount(account);
+    }
+  }
+  wallet.openInDesktop('/desktop/profile');
 };
 
 export default {
@@ -94,4 +144,7 @@ export default {
   providerOverwrite,
   hasOtherProvider,
   isDefaultWallet,
+  'rabby:getProviderConfig': getProviderConfig,
+  'rabby:resetProvider': resetProvider,
+  'rabby:openInDesktop': openInDesktop,
 };

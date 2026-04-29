@@ -3,29 +3,31 @@ import styled from 'styled-components';
 import { Chain } from 'background/service/openapi';
 import { Result } from '@rabby-wallet/rabby-security-engine';
 import { maxBy } from 'lodash';
-import {
-  ParsedActionData,
-  CancelTxRequireData,
-  getActionTypeText,
-} from './utils';
+import { useTranslation } from 'react-i18next';
+import { getActionTypeText } from './utils';
 import { useRabbyDispatch } from '@/ui/store';
 import IconAlert from 'ui/assets/sign/tx/alert.svg';
+import {
+  CancelTxRequireData,
+  ParsedTransactionActionData,
+} from '@rabby-wallet/rabby-action';
 
 const Wrapper = styled.div`
   .container {
     flex: 1;
-    background: rgba(134, 151, 255, 0.1);
-    border: 1px solid #8697ff;
+    background: var(--r-blue-light-1, #eef1ff);
+    border: 1px solid var(--r-blue-default, #7084ff);
     border-radius: 6px;
     padding: 12px;
     // margin-top: 14px;
+    margin-bottom: 12px;
     position: relative;
     .internal-transaction {
       padding: 0 5px;
       position: absolute;
       text-align: center;
       z-index: 1;
-      color: #8697ff;
+      color: var(--r-blue-default, #7084ff);
       font-size: 12px;
       line-height: 12px;
       top: -7px;
@@ -33,10 +35,10 @@ const Wrapper = styled.div`
       .bg {
         position: absolute;
         bottom: 0;
+        left: 0.5px;
         width: 100%;
         height: 6px;
-        // background-color: #eaecfb;
-        background: #ebedfa;
+        background: var(--r-blue-light-1, #424962);
         z-index: -1;
       }
     }
@@ -49,10 +51,10 @@ const Wrapper = styled.div`
         font-size: 14px;
         line-height: 16px;
         &:nth-child(1) {
-          color: #000;
+          color: var(--r-neutral-title-1, #f7fafc);
         }
         &:nth-child(2) {
-          color: #666;
+          color: var(--r-neutral-foot, #babec5);
         }
       }
       &:nth-last-child(1) {
@@ -80,7 +82,7 @@ const CancelTx = ({
   requireData,
   raw,
 }: {
-  data: ParsedActionData['cancelTx'];
+  data: ParsedTransactionActionData['cancelTx'];
   requireData: CancelTxRequireData;
   chain: Chain;
   raw: Record<string, string | number>;
@@ -88,18 +90,15 @@ const CancelTx = ({
   onChange(tx: Record<string, any>): void;
 }) => {
   const dispatch = useRabbyDispatch();
-
-  useEffect(() => {
-    dispatch.securityEngine.init();
-  }, []);
+  const { t } = useTranslation();
 
   const pendingTx = useMemo(() => {
     let tx: { type: string; gasPrice: number } | null = null;
     requireData.pendingTxs.forEach((group) => {
-      let type = 'Unknown';
+      let type = t('page.signTx.unknownAction');
       if (group.action) {
         const data = group.action.actionData;
-        type = getActionTypeText(data);
+        type = getActionTypeText(data as ParsedTransactionActionData);
       }
       const target = maxBy(group.txs, (item) =>
         Number(item.rawTx.gasPrice || item.rawTx.maxFeePerGas || 0)
@@ -133,7 +132,7 @@ const CancelTx = ({
         <>
           <div className="container">
             <div className="internal-transaction">
-              Transaction to be canceled
+              {t('page.signTx.cancelTx.txToBeCanceled')}
               <div className="bg"></div>
             </div>
             {pendingTx && (
@@ -146,8 +145,9 @@ const CancelTx = ({
           {pendingTx && !canCancel && (
             <GasPriceTip>
               <img src={IconAlert} className="w-[15px] mr-10" />
-              Set current gas price more than {pendingTx.gasPrice / 1e9} Gwei to
-              cancel the pending transaction
+              {t('page.signTx.cancelTx.gasPriceAlert', {
+                value: pendingTx.gasPrice / 1e9,
+              })}
             </GasPriceTip>
           )}
         </>

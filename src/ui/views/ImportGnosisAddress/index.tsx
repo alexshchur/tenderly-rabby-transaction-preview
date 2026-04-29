@@ -2,17 +2,26 @@ import { LoadingOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { Button, Form, Input } from 'antd';
 import { useForm } from 'antd/lib/form/Form';
-import { KEYRING_TYPE, WALLET_BRAND_CATEGORY } from 'consts';
-import { isValidAddress } from 'ethereumjs-util';
+import { KEYRING_CLASS, KEYRING_TYPE, WALLET_BRAND_CATEGORY } from 'consts';
+import { isValidAddress } from '@ethereumjs/util';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useHistory } from 'react-router-dom';
 import IconBack from 'ui/assets/icon-back.svg';
 import IconGnosis from 'ui/assets/walletlogo/safe.svg';
 import { useWallet } from 'ui/utils';
+import { useRepeatImportConfirm } from '@/ui/utils/useRepeatImportConfirm';
 import './style.less';
+import { safeJSONParse } from '@/utils';
+import clsx from 'clsx';
+import { UI_TYPE } from '@/constant/ui';
+import qs from 'qs';
 
-const ImportGnosisAddress = () => {
+const ImportGnosisAddress: React.FC<{
+  isInModal?: boolean;
+  onNavigate?(type: string, state?: Record<string, any>): void;
+  onBack?(): void;
+}> = ({ isInModal, onNavigate, onBack }) => {
   const { t } = useTranslation();
   const history = useHistory();
   const wallet = useWallet();
@@ -20,6 +29,8 @@ const ImportGnosisAddress = () => {
   const [errorMessage, setErrorMessage] = useState('');
 
   const [form] = useForm();
+  const { show, contextHolder } = useRepeatImportConfirm();
+  const successTitle = t('page.newAddress.addressAdded');
   const { data: chainList, runAsync, error, loading } = useRequest(
     async (address: string) => {
       const res = await wallet.fetchGnosisChainList(address);
@@ -51,33 +62,64 @@ const ImportGnosisAddress = () => {
   const { runAsync: handleNext } = useRequest(wallet.importGnosisAddress, {
     manual: true,
     async onSuccess(accounts) {
-      history.replace({
-        pathname: '/popup/import/success',
-        state: {
+      if (UI_TYPE.isDesktop) {
+        onNavigate?.('success', {
           accounts,
-          title: t('Added successfully'),
+          title: successTitle,
           editing: true,
           importedAccount: true,
           importedLength: (
             await wallet.getTypedAccounts(KEYRING_TYPE.GnosisKeyring)
           )?.[0]?.accounts?.length,
           supportChainList: chainList,
-        },
-      });
+        });
+      } else {
+        history.replace({
+          pathname: '/popup/import/success',
+          state: {
+            accounts,
+            title: successTitle,
+            editing: true,
+            importedAccount: true,
+            importedLength: (
+              await wallet.getTypedAccounts(KEYRING_TYPE.GnosisKeyring)
+            )?.[0]?.accounts?.length,
+            supportChainList: chainList,
+          },
+        });
+      }
     },
     onError(err) {
-      setErrorMessage(err?.message || t('Not a valid address'));
+      if (err.message?.includes?.('DuplicateAccountError')) {
+        const address = safeJSONParse(err.message)?.address;
+        show({
+          address,
+          type: KEYRING_CLASS.GNOSIS,
+        });
+      } else {
+        setErrorMessage(err?.message || t('Not a valid address'));
+      }
     },
   });
 
   return (
-    <div className="import-gnosis h-full relative">
-      <header className="header h-[180px] relative">
+    <div
+      className={clsx(
+        'import-gnosis h-full relative',
+        isInModal ? 'h-[600px] overflow-auto' : ''
+      )}
+    >
+      {contextHolder}
+      <header className="header h-[180px] relative dark:bg-r-blue-disable">
         <div className="rabby-container pt-[40px]">
           <img
             src={IconBack}
             className="mb-0 absolute z-10 top-[20px] left-[20px] cursor-pointer"
             onClick={() => {
+              if (onBack) {
+                onBack();
+                return;
+              }
               history.goBack();
               sessionStorage.setItem(
                 'SELECTED_WALLET_TYPE',
@@ -90,41 +132,55 @@ const ImportGnosisAddress = () => {
             src={IconGnosis}
           />
           <p className="text-[17px] leading-[20px] mt-0 text-white text-center font-bold">
-            {t('Add Safe address')}
+            {t('page.importSafe.title')}
           </p>
         </div>
       </header>
       <div className="rabby-container">
         <div className="relative p-20">
-          <Form form={form}>
+          <Form
+            form={form}
+            onValuesChange={(changedValues) => {
+              const value = changedValues.address;
+              if (!value) {
+                setErrorMessage(t('page.importSafe.error.required'));
+                return;
+              }
+              if (!isValidAddress(value)) {
+                setErrorMessage(t('page.importSafe.error.invalid'));
+                return;
+              }
+              runAsync(value);
+            }}
+          >
             <Form.Item
               name="address"
               className="mb-0"
               validateStatus={errorMessage ? 'error' : undefined}
+              getValueFromEvent={(e) => {
+                const value = e.target.value;
+                if (
+                  value.includes(':') &&
+                  isValidAddress(value.split(':')[1])
+                ) {
+                  return value.split(':')[1];
+                }
+                return value;
+              }}
             >
-              <Input
+              <Input.TextArea
+                className="leading-normal"
+                autoSize
                 size="large"
                 autoFocus
-                placeholder={t('Please input address')}
+                placeholder={t('page.importSafe.placeholder')}
                 autoComplete="off"
-                onChange={(e) => {
-                  const value = e.target.value;
-                  if (!value) {
-                    setErrorMessage('Please input address');
-                    return;
-                  }
-                  if (!isValidAddress(value)) {
-                    setErrorMessage(t('Not a valid address'));
-                    return;
-                  }
-                  runAsync(e.target.value);
-                }}
               />
             </Form.Item>
           </Form>
           {loading ? (
             <div className="loading">
-              <LoadingOutlined /> Searching the deployed chain of this address
+              <LoadingOutlined /> {t('page.importSafe.loading')}
             </div>
           ) : (
             <>
@@ -134,8 +190,9 @@ const ImportGnosisAddress = () => {
                 !!chainList?.length && (
                   <div className="chain-list-container">
                     <div className="desc">
-                      This address was found deployed on {chainList?.length}{' '}
-                      chains
+                      {t('page.importSafe.gnosisChainDesc', {
+                        count: chainList?.length,
+                      })}
                     </div>
                     <div className="chain-list">
                       {chainList?.map((chain) => {
@@ -162,7 +219,7 @@ const ImportGnosisAddress = () => {
         <Button
           type="primary"
           size="large"
-          className="w-[152px] h-[42px]"
+          className="w-full h-[42px]"
           disabled={loading || !!errorMessage || !chainList?.length}
           onClick={() =>
             handleNext(
@@ -171,7 +228,7 @@ const ImportGnosisAddress = () => {
             )
           }
         >
-          Next
+          {t('global.next')}
         </Button>
       </footer>
     </div>

@@ -3,6 +3,7 @@ import { BrowserQRCodeReader } from '@zxing/browser';
 import './style.less';
 import { openInternalPageInTab } from 'ui/utils';
 import clsx from 'clsx';
+import { message } from 'antd';
 
 interface QRCodeReaderProps {
   onSuccess(text: string): void;
@@ -11,6 +12,7 @@ interface QRCodeReaderProps {
   height?: number;
   isUR?: boolean;
   className?: string;
+  needAccessRedirect?: boolean;
 }
 
 const QRCodeReader = ({
@@ -19,22 +21,27 @@ const QRCodeReader = ({
   width = 100,
   height = 100,
   className,
+  needAccessRedirect = true,
 }: QRCodeReaderProps) => {
   const [canplay, setCanplay] = useState(false);
   const codeReader = useMemo(() => {
-    return new BrowserQRCodeReader();
+    return new BrowserQRCodeReader(undefined, {
+      delayBetweenScanSuccess: 100,
+      delayBetweenScanAttempts: 50,
+    });
   }, []);
   const videoEl = useRef<HTMLVideoElement>(null);
   const checkCameraPermission = async () => {
     const devices = await window.navigator.mediaDevices.enumerateDevices();
     const webcams = devices.filter((device) => device.kind === 'videoinput');
-    // const hasWebcamPermissions = webcams.some(
-    //   (webcam) => webcam.label && webcam.label.length > 0
-    // );
-    // if (!hasWebcamPermissions) {
-    //   openInternalPageInTab('request-permission?type=camera');
-    // }
+    const hasWebcamPermissions = webcams.some(
+      (webcam) => webcam.label && webcam.label.length > 0
+    );
+    if (!hasWebcamPermissions && needAccessRedirect) {
+      openInternalPageInTab('request-permission?type=camera', true, false);
+    }
   };
+
   useEffect(() => {
     checkCameraPermission();
   }, []);
@@ -53,6 +60,15 @@ const QRCodeReader = ({
         }
       }
     );
+
+    promise.catch((e) => {
+      message.error(
+        e?.name === 'NotAllowedError'
+          ? 'Please Enable camera permissions. Then scan the QR code on your device using this camera view.'
+          : e?.message || 'Error'
+      );
+    });
+
     return () => {
       videoElem!.removeEventListener('canplay', canplayListener);
       promise
@@ -72,7 +88,6 @@ const QRCodeReader = ({
         display: canplay ? 'block' : 'none',
         width: `${width}px`,
         height: `${height}px`,
-        filter: 'blur(4px)',
       }}
       ref={videoEl}
       className={clsx('qrcode-reader-comp', className)}

@@ -1,17 +1,26 @@
 import clsx from 'clsx';
-import React from 'react';
-import { FooterDoneButton } from './FooterDoneButton';
+import React, { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { FooterResend } from './FooterResend';
 import { FooterButton } from './FooterButton';
 import { FooterResendCancelGroup } from './FooterResendCancelGroup';
+import TxSucceedSVG from 'ui/assets/approval/tx-succeed.svg';
+import ConnectWiredSVG from 'ui/assets/approval/connect-wired.svg';
+import ConnectWirelessSVG from 'ui/assets/approval/connect-wireless.svg';
+import ConnectQRCodeSVG from 'ui/assets/approval/connect-qrcode.svg';
+import ConnectWalletConnectSVG from 'ui/assets/approval/connect-walletconnect.svg';
+import { noop, useCommonPopupView } from '@/ui/utils';
+import { FooterDoneButton } from './FooterDoneButton';
+import { Dots } from './Dots';
+import type { RetryUpdateType } from '@/background/utils/errorTxRetry';
+import TxWarnSVG from '@/ui/assets/info-warn.svg';
+import TxErrorSVG from '@/ui/assets/info-error.svg';
 
-import TXWaitingSVG from 'ui/assets/approval/tx-waiting.svg';
-import TXErrorSVG from 'ui/assets/approval/tx-error.svg';
-import TXSubmittedSVG from 'ui/assets/approval/tx-submitted.svg';
-import { noop } from '@/ui/utils';
+const PRIVATE_KEY_ERROR_HEIGHT = 247;
+const OTHER_ERROR_HEIGHT = 392;
 
 export interface Props {
-  brandUrl: string;
+  hdType: 'wired' | 'wireless' | 'qrcode' | 'privatekey' | 'walletconnect';
   status:
     | 'SENDING'
     | 'WAITING'
@@ -27,10 +36,12 @@ export interface Props {
   onSubmit?: () => void;
   hasMoreDescription?: boolean;
   children?: React.ReactNode;
+  showAnimation?: boolean;
+  retryUpdateType?: RetryUpdateType;
 }
 
 export const ApprovalPopupContainer: React.FC<Props> = ({
-  brandUrl,
+  hdType,
   status,
   content,
   description,
@@ -40,102 +51,175 @@ export const ApprovalPopupContainer: React.FC<Props> = ({
   onSubmit = noop,
   hasMoreDescription,
   children,
+  showAnimation,
+  retryUpdateType = 'origin',
 }) => {
   const [image, setImage] = React.useState('');
   const [iconColor, setIconColor] = React.useState('');
   const [contentColor, setContentColor] = React.useState('');
+  const { t } = useTranslation();
+  const { setTitle } = useCommonPopupView();
+
+  const sendUrl = React.useMemo(() => {
+    switch (hdType) {
+      case 'wired':
+        return ConnectWiredSVG;
+      case 'wireless':
+        return ConnectWirelessSVG;
+      case 'privatekey':
+        return;
+      case 'walletconnect':
+        return ConnectWalletConnectSVG;
+      case 'qrcode':
+      default:
+        return ConnectQRCodeSVG;
+    }
+  }, [hdType]);
 
   React.useEffect(() => {
     switch (status) {
       case 'SENDING':
-        setImage('/images/tx-sending.gif');
+        setImage('');
         setIconColor('bg-blue-light');
-        setContentColor('text-gray-title');
+        setContentColor('text-r-neutral-title-1');
         break;
       case 'WAITING':
       case 'SUBMITTING':
-        setImage(TXWaitingSVG);
+        setImage('');
         setIconColor('bg-blue-light');
-        setContentColor('text-gray-title');
+        setContentColor('text-r-neutral-title-1');
         break;
       case 'FAILED':
       case 'REJECTED':
-        setImage(TXErrorSVG);
-        setIconColor('bg-red-forbidden');
-        setContentColor('text-red-forbidden');
+        setImage(retryUpdateType ? TxWarnSVG : TxErrorSVG);
+        setIconColor(
+          retryUpdateType ? 'bg-r-orange-default' : 'bg-red-forbidden'
+        );
+        setContentColor('text-r-neutral-title-1');
         break;
       case 'RESOLVED':
-        setImage(TXSubmittedSVG);
+        setImage(TxSucceedSVG);
         setIconColor('bg-green');
-        setContentColor('text-gray-title');
+        setContentColor('text-green');
         break;
       default:
         break;
     }
-  }, [status]);
+  }, [status, retryUpdateType]);
+
+  // const lastNormalHeight = React.useRef(0);
+
+  // React.useEffect(() => {
+  //   if (
+  //     height !== lastNormalHeight.current &&
+  //     height !== OTHER_ERROR_HEIGHT &&
+  //     height !== PRIVATE_KEY_ERROR_HEIGHT
+  //   ) {
+  //     lastNormalHeight.current = height;
+  //   }
+  // }, [height]);
+
+  // React.useEffect(() => {
+  //   if (status === 'FAILED' || status === 'REJECTED') {
+  //     if (hdType === 'privatekey') {
+  //       setHeight(PRIVATE_KEY_ERROR_HEIGHT);
+  //     } else {
+  //       setHeight(OTHER_ERROR_HEIGHT);
+  //     }
+  //   } else {
+  //     setHeight(lastNormalHeight.current);
+  //   }
+  // }, [setHeight, hdType, status]);
+
+  const isFailedOrRejected = status === 'FAILED' || status === 'REJECTED';
+
+  const showSendSvg = !isFailedOrRejected;
+
+  const originTitleRef = React.useRef<React.ReactNode>(null);
+
+  useEffect(() => {
+    if (isFailedOrRejected) {
+      setTitle((pre) => {
+        if (pre && !originTitleRef.current) {
+          originTitleRef.current = pre;
+        }
+        return <div>{null}</div>;
+      });
+    } else {
+      if (originTitleRef.current) {
+        setTitle(originTitleRef.current);
+      }
+    }
+  }, [isFailedOrRejected, retryUpdateType]);
 
   return (
     <div
       className={clsx(
         'flex flex-col items-center',
-        'relative flex-1',
-        hasMoreDescription ? 'mt-4' : 'mt-20'
+        'flex-1',
+        'min-h-[128px]',
+        // reduce body padding top
+        isFailedOrRejected ? '-mt-16' : ''
       )}
     >
+      {sendUrl && showSendSvg ? (
+        <img src={sendUrl} className={'w-[160px] h-[160px]'} />
+      ) : null}
       <div
         className={clsx(
-          'w-[80px] h-[80px] rounded-full',
-          'border-[#E5E9EF] border-[2px]',
-          'relative'
+          'text-[20px] font-medium leading-[24px]',
+          contentColor,
+          hasMoreDescription ? 'mt-[14px]' : 'mt-[28px]',
+          'flex items-center '
         )}
       >
-        <img src={brandUrl} className={'w-full h-full'} />
-        <div
-          className={clsx(
-            'w-[32px] h-[32px] rounded-full',
-            'absolute bottom-[-6px] right-[-6px]',
-            'border border-[#E5E9EF]',
-            iconColor,
-            'flex'
-          )}
-        >
-          <img src={image} className={'m-auto'} />
-        </div>
+        {image ? <img src={image} className="w-20 mr-6" /> : null}
+        <span>{content}</span>
+        {(status === 'SENDING' || status === 'WAITING') && showAnimation ? (
+          <Dots />
+        ) : null}
       </div>
+
       <div
         className={clsx(
-          'text-[20px] font-bold leading-[24px]',
-          contentColor,
-          hasMoreDescription ? 'mt-[24px]' : 'mt-[40px]'
-        )}
-      >
-        {content}
-      </div>
-      <div
-        className={clsx(
-          contentColor,
-          hasMoreDescription
-            ? 'text-[13px] mt-12 leading-[18px] text-center'
-            : 'text-[20px] font-bold'
+          // contentColor,
+          'text-r-neutral-foot text-[13px] text-center',
+          'mt-[12px] mb-[24px]',
+          "px-20'",
+          'overflow-auto w-full'
         )}
       >
         {description}
       </div>
 
-      <div className="absolute bottom-[10px]">
-        {status === 'SENDING' && <FooterResend onResend={onRetry} />}
-        {status === 'WAITING' && <FooterResend onResend={onRetry} />}
-        {status === 'FAILED' && (
-          <FooterButton text="Resend" onClick={onRetry} />
-        )}
-        {status === 'RESOLVED' && <FooterDoneButton onDone={onDone} />}
-        {status === 'REJECTED' && (
-          <FooterResendCancelGroup onResend={onRetry} onCancel={onCancel} />
-        )}
-        {status === 'SUBMITTING' && (
-          <FooterButton text="Submit Transaction" onClick={onSubmit} />
-        )}
+      <div className="w-[calc(100%+32px)] relative -mb-16">
+        <div className="text-center">
+          {status === 'SENDING' && <FooterResend onResend={onRetry} />}
+          {status === 'WAITING' && <FooterResend onResend={onRetry} />}
+          {status === 'FAILED' && (
+            <FooterResendCancelGroup
+              onCancel={onCancel}
+              onResend={onRetry}
+              retryUpdateType={retryUpdateType}
+            />
+          )}
+          {status === 'RESOLVED' && <FooterDoneButton onDone={onDone} hide />}
+          {status === 'REJECTED' && (
+            <FooterResendCancelGroup
+              onCancel={onCancel}
+              onResend={onRetry}
+              retryUpdateType={retryUpdateType}
+            />
+          )}
+          {status === 'SUBMITTING' && (
+            <FooterButton
+              text={t('page.signFooterBar.submitTx')}
+              onClick={onSubmit}
+            />
+          )}
+        </div>
       </div>
+
       {children}
     </div>
   );

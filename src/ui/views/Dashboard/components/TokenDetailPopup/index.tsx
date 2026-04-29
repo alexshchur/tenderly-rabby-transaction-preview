@@ -3,11 +3,13 @@ import { Popup } from '@/ui/component';
 import React from 'react';
 import TokenDetail from './TokenDetail';
 import './style.less';
-import { isSameAddress, useWallet } from '@/ui/utils';
-import { Token } from '@/background/service/preference';
+import { getUiType, isSameAddress, useWallet } from '@/ui/utils';
+import { Account, Token } from '@/background/service/preference';
 import { useRabbyDispatch } from 'ui/store';
-import { DisplayedToken } from 'ui/utils/portfolio/project';
-import { AbstractPortfolioToken } from 'ui/utils/portfolio/types';
+import { useLocation } from 'react-router-dom';
+import { DrawerProps } from 'antd';
+
+const isDesktop = getUiType().isDesktop;
 
 interface TokenDetailProps {
   visible?: boolean;
@@ -16,6 +18,9 @@ interface TokenDetailProps {
   variant?: 'add';
   canClickToken?: boolean;
   hideOperationButtons?: boolean;
+  tipsFromTokenSelect?: string;
+  account?: Account;
+  getContainer?: DrawerProps['getContainer'];
 }
 export const TokenDetailPopup = ({
   token,
@@ -24,39 +29,29 @@ export const TokenDetailPopup = ({
   variant,
   canClickToken = true,
   hideOperationButtons = false,
+  tipsFromTokenSelect,
+  account,
+  getContainer: getContainerProps,
 }: TokenDetailProps) => {
   const wallet = useWallet();
   const dispatch = useRabbyDispatch();
   const [isAdded, setIsAdded] = React.useState(false);
-  const handleAddToken = React.useCallback((tokenWithAmount) => {
-    if (!tokenWithAmount) return;
 
-    if (tokenWithAmount.is_core) {
-      dispatch.account.addBlockedToken(
-        new DisplayedToken(tokenWithAmount) as AbstractPortfolioToken
-      );
-    } else {
-      dispatch.account.addCustomizeToken(
-        new DisplayedToken(tokenWithAmount) as AbstractPortfolioToken
-      );
-    }
-    setIsAdded(true);
-  }, []);
-
-  const handleRemoveToken = React.useCallback((tokenWithAmount) => {
-    if (!tokenWithAmount) return;
-
-    if (tokenWithAmount?.is_core) {
-      dispatch.account.removeBlockedToken(
-        new DisplayedToken(tokenWithAmount) as AbstractPortfolioToken
-      );
-    } else {
-      dispatch.account.removeCustomizeToken(
-        new DisplayedToken(tokenWithAmount) as AbstractPortfolioToken
-      );
-    }
-    setIsAdded(false);
-  }, []);
+  const location = useLocation();
+  const action = new URLSearchParams(location.search).get('action');
+  const isInDesktopActionModal =
+    isDesktop &&
+    (action === 'send' || action === 'swap' || action === 'bridge');
+  const isInSendModal =
+    new URLSearchParams(location.search).get('action') === 'send';
+  const getContainer = isInDesktopActionModal
+    ? isInSendModal
+      ? '.js-rabby-popup-container'
+      : '.js-rabby-desktop-swap-container'
+    : getContainerProps;
+  const isInSwap = location.pathname === '/dex-swap';
+  const isInSend = location.pathname === '/send-token';
+  const isBridge = location.pathname === '/bridge';
 
   const checkIsAdded = React.useCallback(async () => {
     if (!token) return;
@@ -79,26 +74,30 @@ export const TokenDetailPopup = ({
     checkIsAdded();
   }, [checkIsAdded]);
 
+  const popupHeight = isInSend || isInSwap || isBridge ? 540 : 500;
+
   return (
     <Popup
       visible={visible}
       closable={true}
-      height={494}
+      height={popupHeight}
       onClose={onClose}
       className="token-detail-popup"
       push={false}
+      getContainer={getContainer}
     >
       {visible && token && (
         <TokenDetail
+          account={account}
           token={token}
-          addToken={handleAddToken}
-          removeToken={handleRemoveToken}
+          popupHeight={popupHeight}
           variant={variant}
           isAdded={isAdded}
           onClose={onClose}
           canClickToken={canClickToken}
           hideOperationButtons={hideOperationButtons}
-        ></TokenDetail>
+          tipsFromTokenSelect={tipsFromTokenSelect}
+        />
       )}
     </Popup>
   );

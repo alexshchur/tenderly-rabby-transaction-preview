@@ -1,13 +1,18 @@
 import React, { useEffect } from 'react';
 import styled from 'styled-components';
-import { Chain } from 'background/service/openapi';
+import { useTranslation } from 'react-i18next';
 import { Result } from '@rabby-wallet/rabby-security-engine';
-import { ApproveNFTRequireData, ParsedActionData } from './utils';
+import {
+  ApproveNFTRequireData,
+  ParsedTransactionActionData,
+} from '@rabby-wallet/rabby-action';
 import { useRabbyDispatch } from '@/ui/store';
 import { Table, Col, Row } from './components/Table';
 import * as Values from './components/Values';
 import { ProtocolListItem } from './components/ProtocolListItem';
 import ViewMore from './components/ViewMore';
+import { SubTable, SubCol, SubRow } from './components/SubTable';
+import { Chain } from '@/types/chain';
 
 const Wrapper = styled.div`
   .header {
@@ -47,61 +52,84 @@ const RevokeNFTCollection = ({
   requireData,
   chain,
 }: {
-  data: ParsedActionData['approveNFTCollection'];
+  data: ParsedTransactionActionData['approveNFTCollection'];
   requireData: ApproveNFTRequireData;
   chain: Chain;
   engineResults: Result[];
 }) => {
   const actionData = data!;
   const dispatch = useRabbyDispatch();
-
-  useEffect(() => {
-    dispatch.securityEngine.init();
-  }, []);
+  const { t } = useTranslation();
+  const isTestnet = chain.isTestnet;
 
   return (
     <Wrapper>
       <Table>
         <Col>
-          <Row isTitle>Revoke collection</Row>
+          <Row isTitle>
+            {t('page.signTx.revokeNFTCollectionApprove.revokeCollection')}
+          </Row>
           <Row>
-            {actionData?.collection?.name}
-            <ul className="desc-list">
-              <li>
-                <ViewMore
-                  type="collection"
-                  data={{
-                    collection: actionData.collection,
-                    chain,
-                  }}
-                />
-              </li>
-            </ul>
+            {isTestnet ? (
+              <div className="cursor-pointer group-hover:underline hover:text-r-blue-default">
+                {actionData?.collection?.name ?? '-'}
+              </div>
+            ) : (
+              <ViewMore
+                type="collection"
+                data={{
+                  collection: actionData.collection,
+                  chain,
+                }}
+              >
+                <div className="cursor-pointer group-hover:underline hover:text-r-blue-default">
+                  {actionData?.collection?.name ?? '-'}
+                </div>
+              </ViewMore>
+            )}
           </Row>
         </Col>
         <Col>
-          <Row isTitle>Revoke from</Row>
+          <Row isTitle itemsCenter>
+            {t('page.signTx.revokeTokenApprove.revokeFrom')}
+          </Row>
           <Row>
-            <div>
-              <Values.Address address={actionData.spender} chain={chain} />
-            </div>
-            <ul className="desc-list">
-              <ProtocolListItem protocol={requireData.protocol} />
-
-              <li>
-                <ViewMore
-                  type="nftSpender"
-                  data={{
-                    ...requireData,
-                    spender: actionData.spender,
-                    chain,
-                    isRevoke: true,
-                  }}
+            {isTestnet ? (
+              <Values.Address
+                id="revoke-collection-address"
+                hasHover
+                address={actionData.spender}
+                chain={chain}
+              />
+            ) : (
+              <ViewMore
+                type="nftSpender"
+                data={{
+                  ...requireData,
+                  spender: actionData.spender,
+                  chain,
+                  isRevoke: true,
+                }}
+              >
+                <Values.Address
+                  id="revoke-collection-address"
+                  hasHover
+                  address={actionData.spender}
+                  chain={chain}
                 />
-              </li>
-            </ul>
+              </ViewMore>
+            )}
           </Row>
         </Col>
+
+        <SubTable target="revoke-collection-address">
+          <SubCol>
+            <SubRow isTitle>{t('page.signTx.protocol')}</SubRow>
+            <SubRow>
+              <ProtocolListItem protocol={requireData.protocol} />
+            </SubRow>
+          </SubCol>
+        </SubTable>
       </Table>
     </Wrapper>
   );

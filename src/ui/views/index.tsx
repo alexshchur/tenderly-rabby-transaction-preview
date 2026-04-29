@@ -5,7 +5,7 @@ import {
   useHistory,
   useLocation,
 } from 'react-router-dom';
-import { useWallet, WalletProvider } from 'ui/utils';
+import { getUiType, useWallet, WalletProvider } from 'ui/utils';
 import { PrivateRoute } from 'ui/component';
 import Dashboard from './Dashboard';
 import Unlock from './Unlock';
@@ -16,7 +16,18 @@ import { useIdleTimer } from 'react-idle-timer';
 import { useRabbyDispatch, useRabbySelector } from '../store';
 import { useMount } from 'react-use';
 import { useMemoizedFn } from 'ahooks';
-const AsyncMainRoute = lazy(() => import('./MainRoute'));
+import { useThemeModeOnMain } from '../hooks/usePreference';
+import {
+  useCurrentAccount,
+  useSubscribeCurrentAccountChanged,
+} from '../hooks/backgroundState/useAccount';
+import { ForgotPassword } from './ForgotPassword/ForgotPassword';
+import { useSyncCurrentAccount } from '../utils/withAccountChange';
+import { useSyncDbHistory } from '@/db/hooks/history';
+const UiType = getUiType();
+const AsyncMainRoute = lazy(() =>
+  UiType.isDesktop ? import('./DesktopRoute') : import('./MainRoute')
+);
 
 const useAutoLock = () => {
   const history = useHistory();
@@ -38,7 +49,7 @@ const useAutoLock = () => {
 
   useIdleTimer({
     onAction() {
-      if (autoLockTime > 0) {
+      if (autoLockTime > 0 && location.pathname !== '/unlock') {
         wallet.setLastActiveTime();
       }
     },
@@ -47,7 +58,15 @@ const useAutoLock = () => {
 
   const listener = useMemoizedFn(() => {
     if (location.pathname !== '/unlock') {
-      history.push('/unlock');
+      if (UiType.isTab || UiType.isDesktop) {
+        history.replace(
+          `/unlock?from=${encodeURIComponent(
+            location.pathname + location.search
+          )}`
+        );
+      } else {
+        history.push('/unlock');
+      }
     }
   });
 
@@ -57,10 +76,42 @@ const useAutoLock = () => {
       eventBus.removeEventListener(EVENTS.LOCK_WALLET, listener);
     };
   }, [listener]);
+
+  const handleLockShortcut = useMemoizedFn((event: KeyboardEvent) => {
+    if (!(UiType.isPop || UiType.isTab || UiType.isDesktop)) return;
+    if (event.repeat) return;
+    const isLockKey = event.key?.toLowerCase() === 'l' || event.code === 'KeyL';
+    if (!isLockKey) return;
+    if (!event.metaKey && !event.ctrlKey) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    wallet.lockWallet();
+  });
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleLockShortcut, true);
+    return () => {
+      window.removeEventListener('keydown', handleLockShortcut, true);
+    };
+  }, [handleLockShortcut]);
+};
+
+const SyncHook = () => {
+  const account = useCurrentAccount();
+  useSyncDbHistory({
+    account,
+  });
+
+  return null;
 };
 
 const Main = () => {
   useAutoLock();
+  useThemeModeOnMain();
+  useSubscribeCurrentAccountChanged();
+  useSyncCurrentAccount();
+
   return (
     <>
       <Route exact path="/">
@@ -71,12 +122,18 @@ const Main = () => {
         <Unlock />
       </Route>
 
+      <Route exact path="/forgot-password">
+        <ForgotPassword />
+      </Route>
+
       <PrivateRoute exact path="/dashboard">
         <Dashboard />
       </PrivateRoute>
       <Suspense fallback={null}>
         <AsyncMainRoute />
       </Suspense>
+
+      <SyncHook />
     </>
   );
 };

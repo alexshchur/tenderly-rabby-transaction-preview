@@ -1,41 +1,59 @@
 import { useRabbyDispatch, useRabbySelector } from '@/ui/store';
-import { isSameAddress, useWallet } from '@/ui/utils';
-import { CHAINS, CHAINS_ENUM } from '@debank/common';
+import { getUiType, isSameAddress, useWallet } from '@/ui/utils';
+import { CHAINS_ENUM } from '@debank/common';
 import { TokenItem } from '@rabby-wallet/rabby-api/dist/types';
 import { WrapTokenAddressMap } from '@rabby-wallet/rabby-swap';
 import BigNumber from 'bignumber.js';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAsync, useDebounce } from 'react-use';
 import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useAsync, useAsyncFn, useDebounce } from 'react-use';
+import {
+  isSwapWrapToken,
   QuoteProvider,
-  TCexQuoteData,
   TDexQuoteData,
   useQuoteMethods,
 } from './quote';
-import {
-  useQuoteVisible,
-  useRefreshId,
-  useSetRefreshId,
-  useSettingVisible,
-} from './context';
+import { useRefreshId, useSetQuoteVisible, useSetRefreshId } from './context';
 import { useLocation } from 'react-router-dom';
 import { query2obj } from '@/ui/utils/url';
 import { useRbiSource } from '@/ui/utils/ga-event';
 import stats from '@/stats';
-import { useSwapSettings } from './settings';
 import { useAsyncInitializeChainList } from '@/ui/hooks/useChain';
-import { SWAP_SUPPORT_CHAINS } from '@/constant';
+import { EVENTS, SWAP_SUPPORT_CHAINS } from '@/constant';
+import { findChain, findChainByEnum } from '@/utils/chain';
+import { GasLevelType } from '../Component/ReserveGasPopup';
+import { getSwapAutoSlippageValue, useSwapSlippage } from './slippage';
+import { useLowCreditState } from '../Component/LowCreditModal';
+import eventBus from '@/eventBus';
+import { useAutoSlippageEffect } from './autoSlippageEffect';
+import { getChainDefaultToken } from '@/ui/utils/token';
+import {
+  getGasTokenBalance,
+  convert18RawToTokenRaw,
+} from '@/utils/transaction';
+import { isTempoChain } from '@/utils/tempo';
+import { useGasAccountDepositFlowActive } from '@/ui/views/GasAccount/hooks/runtime';
+const isTab = getUiType().isTab;
+
+export const enableInsufficientQuote = true;
 
 const useTokenInfo = ({
   userAddress,
   chain,
   defaultToken,
+  refreshTokenId,
 }: {
   userAddress?: string;
   chain?: CHAINS_ENUM;
   defaultToken?: TokenItem;
+  refreshTokenId?: number;
 }) => {
-  const refreshId = useRefreshId();
   const wallet = useWallet();
   const [token, setToken] = useState<TokenItem | undefined>(defaultToken);
 
@@ -43,12 +61,18 @@ const useTokenInfo = ({
     if (userAddress && token?.id && chain) {
       const data = await wallet.openapi.getToken(
         userAddress,
-        CHAINS[chain].serverId,
+        findChainByEnum(chain)!.serverId,
         token.id
       );
       return data;
     }
-  }, [refreshId, userAddress, token?.id, token?.raw_amount_hex_str, chain]);
+  }, [
+    userAddress,
+    token?.id,
+    token?.raw_amount_hex_str,
+    chain,
+    refreshTokenId,
+  ]);
 
   useDebounce(
     () => {
@@ -66,80 +90,111 @@ const useTokenInfo = ({
   return [token, setToken] as const;
 };
 
-export const useSlippage = () => {
-  const [slippageState, setSlippage] = useState('0.1');
-  const slippage = useMemo(() => slippageState || '0.1', [slippageState]);
-  const [slippageChanged, setSlippageChanged] = useState(false);
-
-  return {
-    slippageChanged,
-    setSlippageChanged,
-    slippageState,
-    slippage,
-    setSlippage,
-  };
-};
-
 export interface FeeProps {
-  fee: '0.3' | '0.1' | '0';
+  fee: '0.25' | '0';
   symbol?: string;
 }
 
 export const useTokenPair = (userAddress: string) => {
   const dispatch = useRabbyDispatch();
   const refreshId = useRefreshId();
+  const setRefreshId = useSetRefreshId();
+  const wallet = useWallet();
+  const depositFlowActive = useGasAccountDepositFlowActive();
 
-  const { initialSelectedChain, oChain } = useRabbySelector((state) => {
+  const {
+    initialSelectedChain,
+    oChain,
+    defaultSelectedFromToken,
+    defaultSelectedToToken,
+  } = useRabbySelector((state) => {
     return {
       initialSelectedChain: state.swap.$$initialSelectedChain,
       oChain: state.swap.selectedChain || CHAINS_ENUM.ETH,
+      defaultSelectedFromToken: state.swap.selectedFromToken,
+      defaultSelectedToToken:
+        state.swap.selectedToToken?.id !== state.swap.selectedFromToken?.id
+          ? state.swap.selectedToToken
+          : undefined,
     };
   });
+
   const [chain, setChain] = useState(oChain);
-  const handleChain = (c: CHAINS_ENUM) => {
-    setChain(c);
-    dispatch.swap.setSelectedChain(c);
-    // resetSwapTokens(c);
-  };
-  useAsyncInitializeChainList({
-    // NOTICE: now `useTokenPair` is only used for swap page, so we can use `SWAP_SUPPORT_CHAINS` here
-    supportChains: SWAP_SUPPORT_CHAINS,
-    onChainInitializedAsync: (firstEnum) => {
-      // only init chain if it's not cached before
-      if (!initialSelectedChain) {
-        handleChain(firstEnum);
+
+  const handleChain = useCallback(
+    (c: CHAINS_ENUM) => {
+      setChain(c);
+      if (!isTab) {
+        dispatch.swap.setSelectedChain(c);
       }
     },
-  });
+    [dispatch?.swap?.setSelectedChain]
+  );
+  const [refreshTokenId, updateRefreshTokenId] = useState(0);
+  const reloadTxRefreshPausedRef = useRef(false);
+  const setReloadTxRefreshPaused = useCallback((paused: boolean) => {
+    reloadTxRefreshPausedRef.current = paused;
+  }, []);
+  const refreshTokensInfo = useCallback(
+    () => updateRefreshTokenId((e) => e + 1),
+    [updateRefreshTokenId]
+  );
+  useEffect(() => {
+    const refreshToken = (params: { addressList: string[] }) => {
+      if (depositFlowActive || reloadTxRefreshPausedRef.current) {
+        return;
+      }
+      if (
+        userAddress &&
+        params?.addressList?.find((item) => {
+          return isSameAddress(item || '', userAddress || '');
+        })
+      ) {
+        refreshTokensInfo();
+      }
+    };
+
+    eventBus.addEventListener(EVENTS.RELOAD_TX, refreshToken);
+    return () => {
+      eventBus.removeEventListener(EVENTS.RELOAD_TX, refreshToken);
+    };
+  }, [depositFlowActive, refreshTokensInfo, userAddress]);
 
   const [payToken, setPayToken] = useTokenInfo({
     userAddress,
     chain,
-    defaultToken: getChainDefaultToken(chain),
+    defaultToken: defaultSelectedFromToken || getChainDefaultToken(chain),
+    refreshTokenId,
   });
-  const [receiveToken, setReceiveToken] = useTokenInfo({
+
+  const [receiveToken, _setReceiveToken] = useTokenInfo({
     userAddress,
     chain,
+    defaultToken: defaultSelectedToToken,
+    refreshTokenId,
   });
 
-  const [payAmount, setPayAmount] = useState('');
-
-  const [feeRate] = useState<FeeProps['fee']>('0');
-
   const {
-    slippageChanged,
-    setSlippageChanged,
-    slippageState,
-    slippage,
-    setSlippage,
-  } = useSlippage();
+    lowCreditToken,
+    lowCreditVisible,
+    setLowCreditToken,
+    setLowCreditVisible,
+  } = useLowCreditState(receiveToken);
 
-  const [currentProvider, setOriActiveProvider] = useState<
-    QuoteProvider | undefined
-  >();
+  const setReceiveToken = useCallback(
+    (token?: TokenItem) => {
+      _setReceiveToken(token);
+      if (token) {
+        if (token?.low_credit_score) {
+          setLowCreditToken(token);
+          setLowCreditVisible(true);
+        }
+      }
+    },
+    [_setReceiveToken]
+  );
 
-  const expiredTimer = useRef<NodeJS.Timeout>();
-  const [expired, setExpired] = useState(false);
+  const [bestQuoteDex, setBestQuoteDex] = useState<string>('');
 
   const setActiveProvider: React.Dispatch<
     React.SetStateAction<QuoteProvider | undefined>
@@ -147,80 +202,17 @@ export const useTokenPair = (userAddress: string) => {
     if (expiredTimer.current) {
       clearTimeout(expiredTimer.current);
     }
-    setSlippageChanged(false);
-    setExpired(false);
-    expiredTimer.current = setTimeout(() => {
-      setExpired(true);
-    }, 1000 * 30);
+
+    if (p && !depositFlowActiveRef.current) {
+      expiredTimer.current = setTimeout(() => {
+        if (!depositFlowActiveRef.current) {
+          setRefreshId((e) => e + 1);
+        }
+      }, 1000 * 20);
+    }
+
     setOriActiveProvider(p);
   }, []);
-
-  const exchangeToken = useCallback(() => {
-    setPayToken(receiveToken);
-    setReceiveToken(payToken);
-  }, [setPayToken, receiveToken, setReceiveToken, payToken]);
-
-  const payTokenIsNativeToken = useMemo(() => {
-    if (payToken) {
-      return isSameAddress(payToken.id, CHAINS[chain].nativeTokenAddress);
-    }
-    return false;
-  }, [chain, payToken]);
-
-  const handleAmountChange: React.ChangeEventHandler<HTMLInputElement> = useCallback(
-    (e) => {
-      const v = e.target.value;
-      if (!/^\d*(\.\d*)?$/.test(v)) {
-        return;
-      }
-      setPayAmount(v);
-    },
-    []
-  );
-
-  const handleBalance = useCallback(() => {
-    if (!payTokenIsNativeToken && payToken) {
-      setPayAmount(tokenAmountBn(payToken).toString(10));
-    }
-  }, [payToken, payTokenIsNativeToken]);
-
-  const isStableCoin = useMemo(() => {
-    if (payToken?.price && receiveToken?.price) {
-      return new BigNumber(payToken?.price)
-        .minus(receiveToken?.price)
-        .div(payToken?.price)
-        .abs()
-        .lte(0.01);
-    }
-    return false;
-  }, [payToken, receiveToken]);
-
-  const [isWrapToken, wrapTokenSymbol] = useMemo(() => {
-    if (payToken?.id && receiveToken?.id) {
-      const wrapTokens = [
-        WrapTokenAddressMap[chain],
-        CHAINS[chain].nativeTokenAddress,
-      ];
-      const res =
-        !!wrapTokens.find((token) => isSameAddress(payToken?.id, token)) &&
-        !!wrapTokens.find((token) => isSameAddress(receiveToken?.id, token));
-      return [
-        res,
-        isSameAddress(payToken?.id, WrapTokenAddressMap[chain])
-          ? payToken.symbol
-          : receiveToken.symbol,
-      ];
-    }
-    return [false, ''];
-  }, [payToken?.id, receiveToken?.id, chain]);
-
-  const inSufficient = useMemo(
-    () =>
-      payToken
-        ? tokenAmountBn(payToken).lt(payAmount)
-        : new BigNumber(0).lt(payAmount),
-    [payToken, payAmount]
-  );
 
   const switchChain = useCallback(
     (c: CHAINS_ENUM, opts?: { payTokenId?: string; changeTo?: boolean }) => {
@@ -239,35 +231,376 @@ export const useTokenPair = (userAddress: string) => {
         // setPayToken(undefined);
       }
       setPayAmount('');
+      setSlider(0);
       setActiveProvider(undefined);
     },
     [setPayToken, setReceiveToken]
   );
 
-  useEffect(() => {
-    // if (isWrapToken) {
-    //   setFeeRate('0');
-    // } else if (isStableCoin) {
-    //   setFeeRate('0.1');
-    // } else {
-    //   setFeeRate('0.3');
-    // }
+  const { search } = useLocation();
+  const [searchObj] = useState<{
+    payTokenId?: string;
+    chain?: string;
+    inputAmount?: string;
+    receiveTokenId?: string;
+    isMax?: boolean;
+  }>(query2obj(search));
 
-    if (isStableCoin) {
-      setSlippage('0.05');
+  useAsyncInitializeChainList({
+    // NOTICE: now `useTokenPair` is only used for swap page, so we can use `SWAP_SUPPORT_CHAINS` here
+    supportChains: SWAP_SUPPORT_CHAINS,
+    onChainInitializedAsync: (firstEnum) => {
+      // only init chain if it's not cached before
+      if (
+        !searchObj?.chain &&
+        !searchObj.payTokenId &&
+        !searchObj.receiveTokenId &&
+        !initialSelectedChain
+      ) {
+        switchChain(firstEnum);
+      }
+    },
+  });
+
+  useEffect(() => {
+    if (!isTab) {
+      dispatch.swap.setSelectedFromToken(payToken);
     }
-  }, [isWrapToken, isStableCoin]);
-
-  const [quoteList, setQuotesList] = useState<
-    (TCexQuoteData | TDexQuoteData)[]
-  >([]);
+  }, [payToken]);
 
   useEffect(() => {
+    if (!isTab) {
+      dispatch.swap.setSelectedToToken(receiveToken);
+    }
+  }, [receiveToken]);
+
+  const [inputAmount, setPayAmount] = useState('');
+
+  const [slider, setSlider] = useState<number>(0);
+
+  const [feeRate, setFeeRate] = useState<FeeProps['fee']>('0');
+
+  const [swapUseSlider, setSwapUseSlider] = useState<boolean>(false);
+
+  const [isDraggingSlider, setIsDraggingSlider] = useState<boolean>(false);
+
+  const onChangeSlider = useCallback(
+    (v: number, syncAmount?: boolean) => {
+      if (payToken) {
+        setIsDraggingSlider(true);
+        setSwapUseSlider(true);
+        setSlider(v);
+        setUseGasPrice(false);
+
+        if (syncAmount) {
+          setIsDraggingSlider(false);
+        }
+
+        if (v === 100) {
+          handleSlider100();
+          return;
+        }
+
+        const newAmountBn = new BigNumber(v)
+          .div(100)
+          .times(tokenAmountBn(payToken));
+        const isTooSmall = newAmountBn.lt(0.0001);
+        setPayAmount(
+          isTooSmall
+            ? newAmountBn.toString(10)
+            : new BigNumber(newAmountBn.toFixed(4, 1)).toString(10)
+        );
+      }
+    },
+    [payToken]
+  );
+
+  const slippageObj = useSwapSlippage();
+
+  const [currentProvider, setOriActiveProvider] = useState<
+    QuoteProvider | undefined
+  >();
+
+  const expiredTimer = useRef<NodeJS.Timeout>();
+  const depositFlowActiveRef = useRef(depositFlowActive);
+  const previousDepositFlowActiveRef = useRef(depositFlowActive);
+
+  useEffect(() => {
+    depositFlowActiveRef.current = depositFlowActive;
+  }, [depositFlowActive]);
+
+  const exchangeToken = useCallback(() => {
+    setPayToken(receiveToken);
+    setReceiveToken(payToken);
+    setPayAmount('');
+    setSlider(0);
+  }, [setPayToken, receiveToken, setReceiveToken, payToken]);
+
+  const payTokenIsNativeToken = useMemo(() => {
+    if (payToken) {
+      return isSameAddress(
+        payToken.id,
+        findChainByEnum(chain)!.nativeTokenAddress
+      );
+    }
+    return false;
+  }, [chain, payToken]);
+
+  const isTempoSwapChain = useMemo(
+    () => isTempoChain(findChainByEnum(chain)?.serverId),
+    [chain]
+  );
+
+  const {
+    value: tempoGasTokenInfo,
+    loading: isTempoGasTokenLoading,
+  } = useAsync(async () => {
+    if (!userAddress || !isTempoSwapChain) {
+      return null;
+    }
+
+    return getGasTokenBalance({
+      wallet,
+      address: userAddress,
+      chainId: findChainByEnum(chain)!.id,
+    });
+  }, [wallet, userAddress, chain, refreshId, isTempoSwapChain]);
+
+  const payTokenIsTempoFeeToken = useMemo(() => {
+    if (
+      !isTempoSwapChain ||
+      !payToken?.id ||
+      !tempoGasTokenInfo?.token.tokenId
+    ) {
+      return false;
+    }
+
+    return isSameAddress(payToken.id, tempoGasTokenInfo.token.tokenId);
+  }, [isTempoSwapChain, payToken?.id, tempoGasTokenInfo?.token.tokenId]);
+
+  const payTokenIsGasToken = useMemo(
+    () => payTokenIsNativeToken || payTokenIsTempoFeeToken,
+    [payTokenIsNativeToken, payTokenIsTempoFeeToken]
+  );
+
+  const [passGasPrice, setUseGasPrice] = useState(false);
+
+  const handleAmountChange = useCallback(
+    (v: string) => {
+      if (!/^\d*(\.\d*)?$/.test(v)) {
+        return;
+      }
+      setPayAmount(v);
+      if (payToken) {
+        const slider = v
+          ? Number(
+              new BigNumber(v || 0)
+                .div(tokenAmountBn(payToken))
+                .times(100)
+                .toFixed(0)
+            )
+          : 0;
+        setSlider(slider < 0 ? 0 : slider > 100 ? 100 : slider);
+        if (!payToken?.amount) {
+          setSlider(0);
+        }
+      }
+      setUseGasPrice(false);
+      setSwapUseSlider(false);
+    },
+    [payToken]
+  );
+
+  const [gasLevel, setGasLevel] = useState<GasLevelType>('normal');
+  const gasPriceRef = useRef<number>();
+
+  const { value: gasList, loading: isGasMarketLoading } = useAsync(() => {
+    gasPriceRef.current = undefined;
+    setGasLevel('normal');
+    return wallet.gasMarketV2({ chainId: findChainByEnum(chain)!.serverId });
+  }, [chain]);
+
+  const normalGasPrice = useMemo(
+    () => gasList?.find((e) => e.level === 'normal')?.price,
+    [gasList]
+  );
+
+  const nativeTokenDecimals = useMemo(
+    () => findChain({ enum: chain })?.nativeTokenDecimals || 1e18,
+    [chain]
+  );
+
+  const gasLimit = useMemo(
+    () => (chain === CHAINS_ENUM.ETH ? 1000000 : 2000000),
+    [chain]
+  );
+
+  const gasTokenDecimals = useMemo(() => {
+    if (payTokenIsNativeToken) {
+      return nativeTokenDecimals;
+    }
+
+    if (payTokenIsTempoFeeToken) {
+      return tempoGasTokenInfo?.token.decimals || payToken?.decimals || 18;
+    }
+
+    return undefined;
+  }, [
+    nativeTokenDecimals,
+    payTokenIsNativeToken,
+    payTokenIsTempoFeeToken,
+    payToken?.decimals,
+    tempoGasTokenInfo?.token.decimals,
+  ]);
+
+  useEffect(() => {
+    if (payTokenIsGasToken && gasList && gasTokenDecimals !== undefined) {
+      const checkGasIsEnough = (price: number) => {
+        return new BigNumber(payToken?.raw_amount_hex_str || 0, 16).gte(
+          convert18RawToTokenRaw(
+            new BigNumber(gasLimit).times(price),
+            gasTokenDecimals
+          )
+        );
+      };
+      const normalPrice =
+        gasList?.find((e) => e.level === 'normal')?.price || 0;
+      const isNormalEnough = checkGasIsEnough(normalPrice);
+      if (isNormalEnough) {
+        gasPriceRef.current = normalGasPrice;
+      } else {
+        gasPriceRef.current = undefined;
+      }
+      return;
+    }
+
+    gasPriceRef.current = undefined;
+  }, [
+    payTokenIsGasToken,
+    gasList,
+    gasLimit,
+    gasTokenDecimals,
+    normalGasPrice,
+    payToken?.raw_amount_hex_str,
+  ]);
+
+  const handleSlider100 = useCallback(() => {
+    if (payTokenIsGasToken && payToken && gasPriceRef.current !== undefined) {
+      const decimals = gasTokenDecimals || 18;
+      const val = tokenAmountBn(payToken).minus(
+        convert18RawToTokenRaw(
+          new BigNumber(gasLimit).times(gasPriceRef.current),
+          decimals
+        ).div(new BigNumber(10).pow(decimals))
+      );
+      if (!val.lt(0)) {
+        setUseGasPrice(true);
+      }
+      setPayAmount(
+        val.lt(0) ? tokenAmountBn(payToken).toString(10) : val.toString(10)
+      );
+    } else {
+      if (payToken) {
+        setPayAmount(tokenAmountBn(payToken).toString(10));
+      }
+    }
+  }, [payToken, gasTokenDecimals, gasLimit, payTokenIsGasToken]);
+
+  useEffect(() => {
+    if (
+      slider === 100 &&
+      swapUseSlider &&
+      payToken?.amount &&
+      !isGasMarketLoading &&
+      (!isTempoSwapChain || !isTempoGasTokenLoading)
+    ) {
+      handleSlider100();
+    }
+  }, [
+    slider,
+    swapUseSlider,
+    payToken?.amount,
+    isGasMarketLoading,
+    isTempoSwapChain,
+    isTempoGasTokenLoading,
+    handleSlider100,
+  ]);
+
+  const isStableCoin = useMemo(() => {
+    if (payToken?.price && receiveToken?.price) {
+      return new BigNumber(payToken?.price)
+        .minus(receiveToken?.price)
+        .div(payToken?.price)
+        .abs()
+        .lte(0.01);
+    }
+    return false;
+  }, [payToken, receiveToken]);
+
+  const [isWrapToken, wrapTokenSymbol] = useMemo(() => {
+    if (payToken?.id && receiveToken?.id) {
+      const res = isSwapWrapToken(payToken?.id, receiveToken?.id, chain);
+      return [
+        res,
+        isSameAddress(payToken?.id, WrapTokenAddressMap[chain])
+          ? payToken.symbol
+          : receiveToken.symbol,
+      ];
+    }
+    return [false, ''];
+  }, [payToken?.id, receiveToken?.id, chain]);
+
+  const inSufficient = useMemo(
+    () =>
+      payToken
+        ? tokenAmountBn(payToken).lt(inputAmount)
+        : new BigNumber(0).lt(inputAmount),
+    [payToken, inputAmount]
+  );
+
+  const inSufficientCanGetQuote = enableInsufficientQuote
+    ? true
+    : !inSufficient;
+  const canRunQuoteRequest =
+    !!(
+      userAddress &&
+      payToken?.id &&
+      receiveToken?.id &&
+      chain &&
+      Number(inputAmount) > 0 &&
+      feeRate
+    ) && inSufficientCanGetQuote;
+
+  useEffect(() => {
+    if (isWrapToken) {
+      setFeeRate('0');
+    }
+    if (slippageObj.autoSlippage) {
+      slippageObj.setSlippage(getSwapAutoSlippageValue(isStableCoin));
+    }
+  }, [slippageObj.autoSlippage, isWrapToken, isStableCoin]);
+
+  const [quoteList, setQuotesList] = useState<TDexQuoteData[]>([]);
+
+  useLayoutEffect(() => {
+    fetchIdRef.current += 1;
     setQuotesList([]);
-  }, [payToken?.id, receiveToken?.id, chain, payAmount]);
+    setActiveProvider(undefined);
+    setPending(canRunQuoteRequest);
+  }, [
+    canRunQuoteRequest,
+    userAddress,
+    payToken?.id,
+    receiveToken?.id,
+    chain,
+    inputAmount,
+    feeRate,
+    slippageObj.slippage,
+    slippageObj.autoSlippage,
+  ]);
 
   const setQuote = useCallback(
-    (id: number) => (quote: TCexQuoteData | TDexQuoteData) => {
+    (id: number) => (quote: TDexQuoteData) => {
       if (id === fetchIdRef.current) {
         setQuotesList((e) => {
           const index = e.findIndex((q) => q.name === quote.name);
@@ -278,7 +611,7 @@ export const useTokenPair = (userAddress: string) => {
           //   return activeQuote;
           // });
 
-          const v = { ...quote, loading: false };
+          const v: TDexQuoteData = { ...quote, loading: false };
           if (index === -1) {
             return [...e, v];
           }
@@ -289,61 +622,94 @@ export const useTokenPair = (userAddress: string) => {
     },
     []
   );
-  const visible = useQuoteVisible();
-  const settingVisible = useSettingVisible();
 
-  useEffect(() => {
-    if (!visible) {
-      setQuotesList([]);
-    }
-  }, [visible]);
+  const [showMoreVisible, setShowMoreVisible] = useState(false);
 
-  const setRefreshId = useSetRefreshId();
-  const { swapTradeList, swapViewList } = useSwapSettings();
+  const [pending, setPending] = useState(false);
 
-  useDebounce(
-    () => {
-      if (!settingVisible) {
-        setQuotesList([]);
-        setRefreshId((e) => e + 1);
-      }
-    },
-    300,
-    [swapTradeList, swapViewList, settingVisible]
+  const [autoSuggestSlippage, setAutoSuggestSlippage] = useState(
+    getSwapAutoSlippageValue(isStableCoin)
   );
+
+  const setAutoSlippage = useCallback(() => {
+    slippageObj.setAutoSlippage(true);
+  }, [slippageObj.setAutoSlippage]);
+
+  useAutoSlippageEffect({
+    chainServerId: findChainByEnum(chain)?.serverId || '',
+    fromTokenId: payToken?.id || '',
+    toTokenId: receiveToken?.id || '',
+    onSetAutoSlippage: setAutoSlippage,
+  });
 
   const fetchIdRef = useRef(0);
   const { getAllQuotes, validSlippage } = useQuoteMethods();
-  const { loading: quoteLoading, error: quotesError } = useAsync(async () => {
+  const [
+    { loading: quoteLoading, error: quotesError },
+    getQuotes,
+  ] = useAsyncFn(async () => {
+    if (depositFlowActiveRef.current) {
+      setPending(false);
+      return;
+    }
+
     fetchIdRef.current += 1;
     const currentFetchId = fetchIdRef.current;
-    if (
-      visible &&
-      userAddress &&
-      payToken?.id &&
-      receiveToken?.id &&
-      receiveToken &&
-      chain &&
-      payAmount &&
-      feeRate
-    ) {
-      // setActiveProvider((e) => (e ? { ...e, halfBetterRate: '' } : e));
-      setQuotesList((e) => e.map((q) => ({ ...q, loading: true })));
+    if (canRunQuoteRequest && receiveToken && !isDraggingSlider) {
+      refreshTokensInfo();
+
+      setQuotesList((e) =>
+        e.map((q) => ({ ...q, loading: true, isBest: false }))
+      );
+      let slippage = slippageObj.slippage;
+      if (slippageObj.autoSlippage) {
+        try {
+          const suggestSlippage = await wallet.openapi.suggestSlippage({
+            chain_id: findChainByEnum(chain)!.serverId,
+            slippage: new BigNumber(slippageObj.slippage || '0.1')
+              .div(100)
+              .toFixed(),
+            from_token_id: payToken.id,
+            to_token_id: receiveToken.id,
+            from_token_amount: inputAmount,
+          });
+
+          slippage = suggestSlippage.suggest_slippage
+            ? new BigNumber(suggestSlippage.suggest_slippage)
+                .times(100)
+                .toFixed()
+            : slippageObj.slippage || '0.1';
+          if (currentFetchId === fetchIdRef.current) {
+            setAutoSuggestSlippage(slippage);
+          }
+        } catch (error) {
+          console.log('suggest_slippage error', error);
+        }
+      }
+
       return getAllQuotes({
         userAddress,
         payToken,
         receiveToken,
-        slippage: slippage || '0.1',
+        slippage: slippage,
         chain,
-        payAmount: payAmount,
+        payAmount: inputAmount,
         fee: feeRate,
         setQuote: setQuote(currentFetchId),
+        inSufficient,
       }).finally(() => {
-        // enableSwapBySlippageChanged(currentFetchId);
+        if (currentFetchId !== fetchIdRef.current) {
+          return;
+        }
+        setPending(false);
+        setShowMoreVisible(true);
       });
+    } else {
+      setActiveProvider(undefined);
     }
   }, [
-    // setActiveProvider,
+    setActiveProvider,
+    canRunQuoteRequest,
     setQuotesList,
     setQuote,
     refreshId,
@@ -351,10 +717,131 @@ export const useTokenPair = (userAddress: string) => {
     payToken?.id,
     receiveToken?.id,
     chain,
-    payAmount,
+    inputAmount,
     feeRate,
-    slippage,
-    visible,
+    slippageObj.slippage,
+    slippageObj.autoSlippage,
+    isDraggingSlider,
+  ]);
+
+  useEffect(() => {
+    if (canRunQuoteRequest) {
+      setPending(true);
+    } else {
+      setPending(false);
+    }
+  }, [
+    canRunQuoteRequest,
+    slippageObj?.slippage,
+    slippageObj.autoSlippage,
+    refreshId,
+  ]);
+
+  const [, cancelQuoteDebounce] = useDebounce(
+    () => {
+      getQuotes();
+    },
+    1000,
+    [getQuotes]
+  );
+
+  useEffect(() => {
+    if (depositFlowActive) {
+      if (expiredTimer.current) {
+        clearTimeout(expiredTimer.current);
+      }
+      setPending(false);
+      cancelQuoteDebounce();
+    } else if (previousDepositFlowActiveRef.current) {
+      setRefreshId((e) => e + 1);
+    }
+
+    previousDepositFlowActiveRef.current = depositFlowActive;
+  }, [cancelQuoteDebounce, depositFlowActive, setRefreshId]);
+
+  useEffect(() => {
+    if (
+      !quoteLoading &&
+      !pending &&
+      receiveToken &&
+      quoteList.every((q, idx) => !q.loading)
+    ) {
+      const sortIncludeGasFee = true;
+      const sortedList = [
+        ...(quoteList?.sort((a, b) => {
+          const getNumber = (quote: typeof a) => {
+            const price = receiveToken.price ? receiveToken.price : 1;
+            if (inSufficient) {
+              return new BigNumber(quote.data?.toTokenAmount || 0)
+                .div(
+                  10 ** (quote.data?.toTokenDecimals || receiveToken.decimals)
+                )
+                .times(price);
+            }
+            if (!quote.preExecResult || !quote.preExecResult.isSdkPass) {
+              return new BigNumber(Number.MIN_SAFE_INTEGER);
+            }
+            const balanceChangeReceiveTokenAmount =
+              new BigNumber(quote.data?.toTokenAmount || 0)
+                .div(
+                  10 ** (quote?.data?.toTokenDecimals || receiveToken.decimals)
+                )
+                .toString() || 0;
+
+            if (sortIncludeGasFee) {
+              return new BigNumber(balanceChangeReceiveTokenAmount)
+                .times(price)
+                .minus(quote?.preExecResult?.gasUsdValue || 0);
+            }
+
+            return new BigNumber(balanceChangeReceiveTokenAmount).times(price);
+          };
+          return getNumber(b).minus(getNumber(a)).toNumber();
+        }) || []),
+      ];
+      setActiveProvider(undefined);
+      if (sortedList?.[0]) {
+        const bestQuote = sortedList[0];
+        const { preExecResult } = bestQuote;
+
+        setBestQuoteDex(bestQuote.name);
+
+        setActiveProvider((preItem) =>
+          !bestQuote.preExecResult || !bestQuote.preExecResult.isSdkPass
+            ? undefined
+            : preItem?.manualClick
+            ? preItem
+            : {
+                name: bestQuote.name,
+                quote: bestQuote.data,
+                preExecResult: bestQuote.preExecResult,
+                gasPrice: preExecResult?.gasPrice,
+                shouldApproveToken: !!preExecResult?.shouldApproveToken,
+                shouldTwoStepApprove: !!preExecResult?.shouldTwoStepApprove,
+                error: !preExecResult,
+                halfBetterRate: '',
+                quoteWarning: undefined,
+                actualReceiveAmount:
+                  new BigNumber(bestQuote.data?.toTokenAmount || 0)
+                    .div(
+                      10 **
+                        (bestQuote?.data?.toTokenDecimals ||
+                          receiveToken.decimals)
+                    )
+                    .toString() || '',
+                gasUsd: preExecResult?.gasUsd,
+              }
+        );
+      }
+    }
+  }, [
+    quoteList,
+    quoteLoading,
+    receiveToken?.id,
+    receiveToken?.chain,
+    inSufficient,
+
+    pending,
   ]);
 
   if (quotesError) {
@@ -366,42 +853,126 @@ export const useTokenPair = (userAddress: string) => {
     error: slippageValidError,
     loading: slippageValidLoading,
   } = useAsync(async () => {
-    if (chain && Number(slippage) && payToken?.id && receiveToken?.id) {
+    if (
+      chain &&
+      Number(slippageObj.slippage) &&
+      payToken?.id &&
+      receiveToken?.id
+    ) {
       return validSlippage({
         chain,
-        slippage,
+        slippage: slippageObj.slippage,
         payTokenId: payToken?.id,
         receiveTokenId: receiveToken?.id,
       });
     }
-  }, [slippage, chain, payToken?.id, receiveToken?.id, refreshId]);
+  }, [slippageObj.slippage, chain, payToken?.id, receiveToken?.id, refreshId]);
+  const openQuote = useSetQuoteVisible();
+
+  const openQuotesList = useCallback(() => {
+    openQuote(true);
+  }, []);
 
   useEffect(() => {
-    setExpired(false);
-    setActiveProvider(undefined);
-    setSlippageChanged(false);
-  }, [payToken?.id, receiveToken?.id, chain, payAmount, inSufficient]);
-
-  const { search } = useLocation();
-  const [searchObj] = useState<{
-    payTokenId?: string;
-    chain?: string;
-  }>(query2obj(search));
+    if (expiredTimer.current) {
+      clearTimeout(expiredTimer.current);
+    }
+  }, [payToken?.id, receiveToken?.id, chain, inputAmount]);
 
   useEffect(() => {
-    if (searchObj.chain && searchObj.payTokenId) {
-      const target = Object.values(CHAINS).find(
-        (item) => item.serverId === searchObj.chain
-      );
+    if (expiredTimer.current) {
+      clearTimeout(expiredTimer.current);
+    }
+  }, [inSufficientCanGetQuote]);
+
+  useEffect(() => {
+    let active = true;
+    if (searchObj.chain) {
+      const target = findChain({
+        serverId: searchObj.chain,
+      });
       if (target) {
-        setChain(target?.enum);
-        setPayToken({
-          ...getChainDefaultToken(target?.enum),
-          id: searchObj.payTokenId,
-        });
+        handleChain(target?.enum);
+
+        if (searchObj.payTokenId) {
+          wallet.openapi
+            .getToken(userAddress, target.serverId, searchObj.payTokenId)
+            .then(
+              (token) => {
+                if (active) {
+                  if (token) {
+                    setPayToken(token);
+                  } else {
+                    switchChain(target.enum);
+                  }
+                }
+              },
+              () => {
+                if (active) {
+                  switchChain(target.enum);
+                }
+              }
+            );
+        } else {
+          setPayToken(undefined);
+        }
+
+        if (searchObj?.inputAmount && !searchObj?.isMax) {
+          handleAmountChange(searchObj?.inputAmount);
+        }
+
+        if (searchObj?.receiveTokenId) {
+          setReceiveToken({
+            ...getChainDefaultToken(target.enum),
+            id: searchObj.receiveTokenId,
+            logo_url: '',
+            symbol: '',
+            optimized_symbol: '',
+          });
+          wallet.openapi
+            .getToken(userAddress, target.serverId, searchObj.receiveTokenId)
+            .then((token) => {
+              if (active) {
+                setReceiveToken(token);
+              }
+            });
+        } else {
+          setReceiveToken(undefined);
+        }
       }
     }
-  }, [searchObj?.chain, searchObj?.payTokenId]);
+    return () => {
+      active = false;
+    };
+  }, [
+    searchObj?.chain,
+    searchObj?.payTokenId,
+    searchObj?.inputAmount,
+    searchObj?.receiveTokenId,
+    searchObj?.isMax,
+  ]);
+
+  const isSetMaxRef = useRef(false);
+  useEffect(() => {
+    if (isSetMaxRef.current) {
+      return;
+    }
+    if (
+      !isGasMarketLoading &&
+      (!isTempoSwapChain || !isTempoGasTokenLoading) &&
+      searchObj?.isMax &&
+      payToken?.amount
+    ) {
+      onChangeSlider(100, true);
+      isSetMaxRef.current = true;
+    }
+  }, [
+    isGasMarketLoading,
+    isTempoSwapChain,
+    isTempoGasTokenLoading,
+    searchObj?.isMax,
+    payToken,
+  ]);
 
   const rbiSource = useRbiSource();
 
@@ -413,7 +984,27 @@ export const useTokenPair = (userAddress: string) => {
     }
   }, [rbiSource]);
 
+  const clearExpiredTimer = useCallback(() => {
+    if (expiredTimer.current) {
+      clearTimeout(expiredTimer.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearExpiredTimer();
+    };
+  }, []);
+
   return {
+    setReloadTxRefreshPaused,
+    bestQuoteDex,
+    gasLevel,
+
+    gasLimit,
+    gasList,
+    passGasPrice,
+
     chain,
     switchChain,
 
@@ -423,23 +1014,22 @@ export const useTokenPair = (userAddress: string) => {
     setReceiveToken,
     exchangeToken,
     payTokenIsNativeToken,
+    payTokenIsGasToken,
 
     handleAmountChange,
-    handleBalance,
-    payAmount,
+    setPayAmount,
+    inputAmount,
 
     isWrapToken,
     wrapTokenSymbol,
     inSufficient,
-    slippageChanged,
-    setSlippageChanged,
-    slippageState,
-    slippage,
-    setSlippage,
+    inSufficientCanGetQuote,
+
     feeRate,
 
     //quote
-    quoteLoading,
+    openQuotesList,
+    quoteLoading: quoteLoading || pending,
     quoteList,
     currentProvider,
     setActiveProvider,
@@ -447,32 +1037,50 @@ export const useTokenPair = (userAddress: string) => {
     slippageValidInfo,
     slippageValidLoading,
 
-    expired,
+    slider,
+    swapUseSlider,
+    onChangeSlider,
+
+    clearExpiredTimer,
+    lowCreditToken,
+    lowCreditVisible,
+    setLowCreditToken,
+    setLowCreditVisible,
+    showMoreVisible,
+
+    ...slippageObj,
+
+    autoSuggestSlippage,
+    setAutoSuggestSlippage,
   };
 };
 
-function getChainDefaultToken(chain: CHAINS_ENUM) {
-  const chainInfo = CHAINS[chain];
-  return {
-    id: chainInfo.nativeTokenAddress,
-    decimals: chainInfo.nativeTokenDecimals,
-    logo_url: chainInfo.nativeTokenLogo,
-    symbol: chainInfo.nativeTokenSymbol,
-    display_symbol: chainInfo.nativeTokenSymbol,
-    optimized_symbol: chainInfo.nativeTokenSymbol,
-    is_core: true,
-    is_verified: true,
-    is_wallet: true,
-    amount: 0,
-    price: 0,
-    name: chainInfo.nativeTokenSymbol,
-    chain: chainInfo.serverId,
-    time_at: 0,
-  } as TokenItem;
-}
-
 function tokenAmountBn(token: TokenItem) {
   return new BigNumber(token?.raw_amount_hex_str || 0, 16).div(
-    10 ** (token?.decimals || 1)
+    10 ** token.decimals
   );
 }
+
+export const useDetectLoss = ({
+  receiveRawAmount: receiveAmount,
+  payAmount,
+  payToken,
+  receiveToken,
+}: {
+  payAmount: string;
+  receiveRawAmount: string | number;
+  payToken?: TokenItem;
+  receiveToken?: TokenItem;
+}) => {
+  return useMemo(() => {
+    if (!payToken || !receiveToken) {
+      return false;
+    }
+    const pay = new BigNumber(payAmount).times(payToken.price || 0);
+    const receiveAll = new BigNumber(receiveAmount);
+    const receive = receiveAll.times(receiveToken.price || 0);
+    const cut = receive.minus(pay).div(pay).times(100);
+
+    return cut.lte(-5);
+  }, [payAmount, payToken?.price, receiveAmount, receiveToken?.price]);
+};

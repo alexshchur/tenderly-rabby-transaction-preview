@@ -12,33 +12,45 @@ import IconMaskIcon from '@/ui/assets/create-mnemonics/mask-lock.svg';
 import { ReactComponent as IconRcMask } from '@/ui/assets/create-mnemonics/mask-lock.svg';
 import clsx from 'clsx';
 
-const AddressBackup = () => {
+const AddressBackupPrivateKey: React.FC<{
+  isInModal?: boolean;
+  onClose?(): void;
+}> = ({ isInModal, onClose }) => {
   const wallet = useWallet();
   const { t } = useTranslation();
   const history = useHistory();
   const { state } = useLocation<{
     data: string;
   }>();
+
   const data = state?.data;
   const [masked, setMasked] = useState(true);
   const [isShowPrivateKey, setIsShowPrivateKey] = useState(false);
 
   useEffect(() => {
     if (!data) {
-      history.goBack();
+      if (isInModal) {
+        onClose?.();
+      } else {
+        history.goBack();
+      }
     }
-  }, [data, history]);
+  }, [data, history, isInModal]);
+
   if (!data) {
     return null;
   }
   return (
-    <div className="page-address-backup">
-      <header>Backup Private Key</header>
+    <div
+      className={clsx(
+        'page-address-backup',
+        isInModal ? 'min-h-0 h-[600px]' : ''
+      )}
+    >
+      <header>{t('page.backupPrivateKey.title')}</header>
       <div className="alert mb-[20px]">
         <InfoCircleOutlined />
-        This Private Key is the credential to your assets. DO NOT lose it or
-        reveal it to others, otherwise you might lose your assets forever.
-        Please view it in a secure environment and keep it carefully.
+        {t('page.backupPrivateKey.alert')}
       </div>
       <div className="qrcode mb-[32px] relative">
         <div
@@ -49,7 +61,7 @@ const AddressBackup = () => {
         >
           <img src={IconMaskIcon} className="w-[44px] h-[44px]" />
           <p className="mt-[16px] mb-0 text-white px-[15px]">
-            {t('Click to show private key QR Code')}
+            {t('page.backupPrivateKey.clickToShowQr')}
           </p>
         </div>
         <QRCode
@@ -67,28 +79,26 @@ const AddressBackup = () => {
             }}
           >
             <IconRcMask width={20} height={20} viewBox="0 0 44 44"></IconRcMask>
-            Click to show private key
+            {t('page.backupPrivateKey.clickToShow')}
           </div>
         ) : (
-          <>
-            {data}
-            <Copy icon={IconCopy} data={data} className="icon-copy"></Copy>
-          </>
+          <p className="private-key-text">{data}</p>
         )}
+        <Copy icon={IconCopy} data={data} className="icon-copy"></Copy>
       </div>
 
-      <div className="footer pb-[24px]">
+      <div className="footer pb-[20px]">
         <Button
           type="primary"
           size="large"
-          className="w-[200px]"
+          className="w-full"
           onClick={() => history.goBack()}
         >
-          Done
+          {t('global.Done')}
         </Button>
       </div>
     </div>
   );
 };
 
-export default AddressBackup;
+export default AddressBackupPrivateKey;

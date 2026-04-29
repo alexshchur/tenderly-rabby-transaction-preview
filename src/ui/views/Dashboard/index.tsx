@@ -1,99 +1,54 @@
-import { Input, message, Popover } from 'antd';
-import ClipboardJS from 'clipboard';
 import clsx from 'clsx';
-import { Trans } from 'react-i18next';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { matomoRequestEvent } from '@/utils/matomo-request';
-import {
-  KEYRING_CLASS,
-  KEYRING_ICONS,
-  KEYRING_ICONS_WHITE,
-  KEYRING_TYPE,
-  KEYRING_TYPE_TEXT,
-  WALLET_BRAND_CONTENT,
-  EVENTS,
-} from 'consts';
-import QRCode from 'qrcode.react';
 import React, { useEffect, useState } from 'react';
-import { useHistory } from 'react-router-dom';
-import { useInterval } from 'react-use';
-import IconAddressCopy from 'ui/assets/address-copy.png';
-import IconCorrect from 'ui/assets/dashboard/contacts/correct.png';
-import IconUnCorrect from 'ui/assets/dashboard/contacts/uncorrect.png';
-import IconEditPen from 'ui/assets/editpen.svg';
-import { ReactComponent as RcIconCopy } from 'ui/assets/icon-copy.svg';
+import { useTranslation } from 'react-i18next';
+import ReactMarkdown from 'react-markdown';
+import { useHistory, useLocation } from 'react-router-dom';
+import remarkGfm from 'remark-gfm';
 
-import IconSuccess from 'ui/assets/success.svg';
-import { AddressViewer, Modal } from 'ui/component';
-import {
-  connectStore,
-  useRabbyDispatch,
-  useRabbyGetter,
-  useRabbySelector,
-} from 'ui/store';
-import { isSameAddress, useWallet } from 'ui/utils';
-import {
-  BalanceView,
-  ChainAndSiteSelector,
-  GnosisWrongChainAlertBar,
-  DefaultWalletSetting,
-} from './components';
+import { AuthenticationModal, Modal } from 'ui/component';
+import { connectStore, useRabbyDispatch, useRabbySelector } from 'ui/store';
+import { useWallet } from 'ui/utils';
 import './style.less';
 
 import PendingApproval from './components/PendingApproval';
-import PendingTxs from './components/PendingTxs';
-import { getKRCategoryByType } from '@/utils/transaction';
-import eventBus from '@/eventBus';
 
-import { ReactComponent as IconAddAddress } from '@/ui/assets/address/add-address.svg';
-import { ReactComponent as IconArrowRight } from 'ui/assets/dashboard/arrow-right.svg';
-import Queue from './components/Queue';
-import { copyAddress } from '@/ui/utils/clipboard';
-import { useWalletConnectIcon } from '@/ui/component/WalletConnect/useWalletConnectIcon';
-import { useGnosisNetworks } from '@/ui/hooks/useGnosisNetworks';
-import { useGnosisPendingTxs } from '@/ui/hooks/useGnosisPendingTxs';
-import { CommonSignal } from '@/ui/component/ConnectStatus/CommonSignal';
+import { CurrentConnection } from './components/CurrentConnection';
+import { DashboardHeader } from './components/DashboardHeader';
+import { DashboardPanel } from './components/DashboardPanel';
+import { useCurrentAccount } from '@/ui/hooks/backgroundState/useAccount';
+import { GasPriceBar } from './components/GasPriceBar';
+import { CHAINS_ENUM } from '@/constant';
+import Settings from './components/Settings';
+import { useMemoizedFn, useMount } from 'ahooks';
+import { useEnterPassphraseModal } from '@/ui/hooks/useEnterPassphraseModal';
+import { useGasAccountDiscovery } from '@/ui/views/GasAccount/hooks';
 
 const Dashboard = () => {
   const history = useHistory();
   const wallet = useWallet();
   const dispatch = useRabbyDispatch();
+  const currentAccount = useCurrentAccount();
+  const { refreshDiscovery } = useGasAccountDiscovery({
+    autoRefresh: false,
+  });
 
-  const { alianName, currentAccount, accountsList } = useRabbySelector((s) => ({
-    alianName: s.account.alianName,
-    currentAccount: s.account.currentAccount,
-    accountsList: s.accountToDisplay.accountsList,
-  }));
-
-  const { pendingTransactionCount: pendingTxCount } = useRabbySelector((s) => ({
-    ...s.transactions,
-  }));
-
-  const { firstNotice, updateContent } = useRabbySelector((s) => ({
+  const { firstNotice, updateContent, version } = useRabbySelector((s) => ({
     ...s.appVersion,
   }));
-
-  const [copySuccess, setCopySuccess] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const [clicked, setClicked] = useState(false);
-  const [startEdit, setStartEdit] = useState(false);
-  const [displayName, setDisplayName] = useState<string>('');
-  const [showChain, setShowChain] = useState(false);
-  const [showToken, setShowToken] = useState(false);
-  const [showAssets, setShowAssets] = useState(false);
-  const [showNFT, setShowNFT] = useState(false);
-  const [topAnimate, setTopAnimate] = useState('');
-  const [connectionAnimation, setConnectionAnimation] = useState('');
-  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
-  const [accountBalanceUpdateNonce, setAccountBalanceUpdateNonce] = useState(0);
-
-  const isGnosis = useRabbyGetter((s) => s.chains.isCurrentAccountGnosis);
-  const gnosisPendingCount = useRabbySelector(
-    (s) => s.chains.gnosisPendingCount
+  const accountsDiscoveryKey = useRabbySelector((s) =>
+    s.accountToDisplay.accountsList
+      .map(
+        (account) =>
+          `${account.address.toLowerCase()}:${account.type}:${
+            account.brandName || ''
+          }`
+      )
+      .sort()
+      .join('|')
   );
 
-  const [dashboardReload, setDashboardReload] = useState(false);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
+
   const getCurrentAccount = async () => {
     const account = await dispatch.account.getCurrentAccountAsync();
     if (!account) {
@@ -102,106 +57,18 @@ const Dashboard = () => {
     }
   };
 
-  useInterval(() => {
-    if (!currentAccount) return;
-    if (currentAccount.type === KEYRING_TYPE.GnosisKeyring) return;
-
-    dispatch.transactions.getPendingTxCountAsync(currentAccount.address);
-  }, 30000);
-
   useEffect(() => {
     getCurrentAccount();
   }, []);
 
-  useGnosisNetworks(
-    {
-      address:
-        currentAccount?.address &&
-        currentAccount?.type === KEYRING_TYPE.GnosisKeyring
-          ? currentAccount.address
-          : '',
-    },
-    {
-      onBefore() {
-        dispatch.chains.setField({
-          gnosisNetworkIds: [],
-        });
-      },
-      onSuccess(res) {
-        if (res) {
-          dispatch.chains.setField({
-            gnosisNetworkIds: res,
-          });
-        }
-      },
-    }
-  );
-
-  useGnosisPendingTxs(
-    {
-      address:
-        currentAccount?.address &&
-        currentAccount?.type === KEYRING_TYPE.GnosisKeyring
-          ? currentAccount.address
-          : '',
-    },
-    {
-      onBefore() {
-        dispatch.chains.setField({
-          gnosisPendingCount: 0,
-        });
-      },
-      onSuccess(res) {
-        dispatch.chains.setField({
-          gnosisPendingCount: res?.total || 0,
-        });
-      },
-    }
-  );
-
   useEffect(() => {
     if (currentAccount) {
-      if (currentAccount.type !== KEYRING_TYPE.GnosisKeyring) {
-        dispatch.transactions.getPendingTxCountAsync(currentAccount.address);
-      }
-
-      wallet
-        .getAlianName(currentAccount?.address.toLowerCase())
-        .then((name) => {
-          dispatch.account.setField({ alianName: name });
-          setDisplayName(name!);
-        });
-
-      eventBus.addEventListener(EVENTS.TX_COMPLETED, async ({ address }) => {
-        if (isSameAddress(address, currentAccount.address)) {
-          const count = await dispatch.transactions.getPendingTxCountAsync(
-            currentAccount.address
-          );
-          if (count === 0) {
-            setTimeout(() => {
-              // increase accountBalanceUpdateNonce to trigger useCurrentBalance re-fetch account balance
-              // delay 5s for waiting db sync data
-              setAccountBalanceUpdateNonce(accountBalanceUpdateNonce + 1);
-            }, 5000);
-          }
-        }
+      dispatch.gift.checkGiftEligibilityAsync({
+        address: currentAccount.address,
+        currentAccount,
       });
     }
-    return () => {
-      eventBus.removeAllEventListeners(EVENTS.TX_COMPLETED);
-    };
   }, [currentAccount]);
-
-  useEffect(() => {
-    if (dashboardReload) {
-      if (currentAccount) {
-        dispatch.transactions.getPendingTxCountAsync(currentAccount.address);
-      }
-      setDashboardReload(false);
-      getCurrentAccount();
-      dispatch.accountToDisplay.getAllAccountsToDisplay();
-    }
-  }, [dashboardReload]);
 
   useEffect(() => {
     (async () => {
@@ -209,350 +76,121 @@ const Dashboard = () => {
       dispatch.accountToDisplay.getAllAccountsToDisplay();
       const pendingCount = await wallet.getPendingApprovalCount();
       setPendingApprovalCount(pendingCount);
+      const hasAnyAccountClaimedGift = await wallet.getHasAnyAccountClaimedGift();
+      dispatch.gift.setField({ hasClaimedGift: hasAnyAccountClaimedGift });
     })();
   }, []);
 
   useEffect(() => {
-    if (clicked) {
-      dispatch.accountToDisplay.getAllAccountsToDisplay();
-    }
-  }, [clicked]);
-
-  const handleCopyCurrentAddress = () => {
-    const clipboard = new ClipboardJS('.address-popover', {
-      text: function () {
-        return currentAccount!.address;
-      },
-    });
-    clipboard.on('success', () => {
-      setCopySuccess(true);
-      setTimeout(() => {
-        setCopySuccess(false);
-      }, 1000);
-      message.success({
-        duration: 3,
-        icon: <i />,
-        content: (
-          <div>
-            <div className="flex gap-4 mb-4">
-              <img src={IconSuccess} alt="" />
-              Copied
-            </div>
-            <div className="text-white">{currentAccount!.address}</div>
-          </div>
-        ),
-      });
-      matomoRequestEvent({
-        category: 'AccountInfo',
-        action: 'popupCopyAddress',
-        label: [
-          getKRCategoryByType(currentAccount?.type),
-          currentAccount?.brandName,
-        ].join('|'),
-      });
-      clipboard.destroy();
-    });
-  };
-
-  const handleAlianNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    e.stopPropagation();
-    dispatch.account.setField({ alianName: e.target.value });
-  };
-
-  const alianNameConfirm = async (e) => {
-    e.stopPropagation();
-    if (!alianName) {
+    if (!accountsDiscoveryKey) {
       return;
     }
-    setStartEdit(false);
-    await wallet.updateAlianName(
-      currentAccount?.address?.toLowerCase() || '',
-      alianName
-    );
-    setDisplayName(alianName);
-    const newAccountList = accountsList.map((item) => {
-      if (
-        item.address.toLowerCase() === currentAccount?.address.toLowerCase()
-      ) {
-        return {
-          ...item,
-          alianName: alianName,
-        };
-      }
-      return item;
+    refreshDiscovery().catch((error) => {
+      console.error(
+        '[gasAccount] refresh discovery on account change failed',
+        error
+      );
     });
-    if (newAccountList.length > 0) {
-      dispatch.accountToDisplay.setField({ accountsList: newAccountList });
-    }
-  };
+  }, [accountsDiscoveryKey, refreshDiscovery]);
 
-  const gotoAddAddress = () => {
-    matomoRequestEvent({
-      category: 'Front Page Click',
-      action: 'Click',
-      label: 'Add Address',
-    });
-    history.push('/add-address');
-  };
   useEffect(() => {
     dispatch.appVersion.checkIfFirstLoginAsync();
-  }, []);
+  }, [dispatch]);
 
-  const hideAllList = () => {
-    setShowAssets(false);
-    setShowChain(false);
-    setShowToken(false);
-    setShowNFT(false);
-    setConnectionAnimation('fadeInBottom');
-    setTopAnimate('fadeInTop');
-  };
-
-  const showGnosisWrongChainAlert = useRabbyGetter(
-    (s) => s.chains.isShowGnosisWrongChainAlert
+  const { t } = useTranslation();
+  const [currentConnectedSiteChain, setCurrentConnectedSiteChain] = useState(
+    CHAINS_ENUM.ETH
   );
-  const opacity60 =
-    currentAccount?.type === KEYRING_CLASS.MNEMONIC ||
-    currentAccount?.type === KEYRING_CLASS.PRIVATE_KEY ||
-    currentAccount?.type === KEYRING_CLASS.WATCH;
-  const showGnosisAlert = isGnosis && showGnosisWrongChainAlert && !showChain;
 
-  const switchAddress = () => {
-    matomoRequestEvent({
-      category: 'Front Page Click',
-      action: 'Click',
-      label: 'Change Address',
-    });
-    history.push('/switch-address');
-  };
+  const [settingVisible, setSettingVisible] = useState(false);
+  const [autoScrollToBiometric, setAutoScrollToBiometric] = useState(false);
+  const toggleShowMoreSettings = useMemoizedFn(() => {
+    setSettingVisible(!settingVisible);
+  });
 
-  const brandIcon = useWalletConnectIcon(currentAccount);
+  const location = useLocation();
+  const invokeEnterPassphrase = useEnterPassphraseModal('address');
+  useMount(() => {
+    const check = async () => {
+      const cache = await wallet.getPageStateCache();
+      if (
+        cache?.path === location.pathname &&
+        cache?.states?.action === 'open-settings'
+      ) {
+        wallet.clearPageStateCache();
+        setAutoScrollToBiometric(true);
+        setSettingVisible(true);
+        return;
+      }
+
+      if (
+        cache?.path === location.pathname &&
+        cache?.states?.action === 'address-backup'
+      ) {
+        wallet.clearPageStateCache();
+        const address = currentAccount?.address;
+        if (!address) {
+          return;
+        }
+        const hasBackup = await wallet.checkSeedPhraseBackup(address);
+        if (hasBackup) {
+          return;
+        }
+        let data = '';
+
+        await AuthenticationModal({
+          confirmText: t('global.confirm'),
+          cancelText: t('global.Cancel'),
+          title: t('page.addressDetail.backup-seed-phrase'),
+          validationHandler: async (password: string) => {
+            await invokeEnterPassphrase(address);
+
+            data = await wallet.getMnemonics(password, address);
+          },
+          onFinished() {
+            history.push({
+              pathname: '/settings/address-backup/mneonics',
+              state: {
+                data: data,
+                goBack: true,
+              },
+            });
+          },
+          onCancel() {
+            // do nothing
+          },
+          wallet,
+        });
+      }
+    };
+    check();
+  });
 
   return (
     <>
-      <div
-        className={clsx('dashboard', {
-          'metamask-active': showGnosisWrongChainAlert && isGnosis,
-        })}
-      >
-        <div className={clsx('main', showChain && 'show-chain-bg')}>
-          {currentAccount && (
-            <div
-              className={clsx('flex header items-center relative', topAnimate)}
-            >
-              <div
-                className="h-[36px] flex header-wrapper items-center relative"
-                onClick={switchAddress}
-              >
-                <Popover
-                  content={null}
-                  trigger="click"
-                  visible={false}
-                  placement="bottomLeft"
-                  overlayClassName="switch-popover"
-                >
-                  <div className="relative mr-[4px]">
-                    <img
-                      className={clsx(
-                        'icon w-[24px] h-[24px]',
-                        opacity60 && 'opacity-60'
-                      )}
-                      src={
-                        brandIcon ||
-                        WALLET_BRAND_CONTENT[currentAccount.brandName]?.image ||
-                        KEYRING_ICONS_WHITE[currentAccount.type]
-                      }
-                    />
-                    <CommonSignal
-                      type={currentAccount.type}
-                      brandName={currentAccount.brandName}
-                      address={currentAccount.address}
-                    />
-                  </div>
-                  <div
-                    className="text-15 text-white ml-6 mr-6 dashboard-name"
-                    title={displayName}
-                  >
-                    {displayName}
-                  </div>
-                  <div className="current-address">
-                    {currentAccount && (
-                      <AddressViewer
-                        address={currentAccount.address}
-                        showArrow={false}
-                        className={'text-12 text-white opacity-60'}
-                      />
-                    )}
-                  </div>
-                  <IconArrowRight className="ml-8" />
-                </Popover>
-              </div>
-
-              <RcIconCopy
-                className="copyAddr"
-                onClick={() => {
-                  copyAddress(currentAccount.address);
-                  matomoRequestEvent({
-                    category: 'AccountInfo',
-                    action: 'headCopyAddress',
-                    label: [
-                      getKRCategoryByType(currentAccount?.type),
-                      currentAccount?.brandName,
-                    ].join('|'),
-                  });
-                }}
-              />
-
-              <div
-                className="ml-auto w-[36px] h-[36px] bg-white bg-opacity-[0.12] hover:bg-opacity-[0.3] backdrop-blur-[20px] rounded-[6px] flex items-center justify-center cursor-pointer"
-                role="button"
-                onClick={gotoAddAddress}
-              >
-                <IconAddAddress className="text-white w-[20px] h-[20px]" />
-              </div>
-            </div>
-          )}
-          <BalanceView
-            currentAccount={currentAccount}
-            accountBalanceUpdateNonce={accountBalanceUpdateNonce}
-          />
-          {isGnosis ? (
-            <Queue
-              count={gnosisPendingCount || 0}
-              className={clsx(
-                'transition-all',
-                showChain ? 'opacity-0 pointer-events-none' : 'opacity-100'
-              )}
-            />
-          ) : (
-            pendingTxCount > 0 &&
-            !showChain && <PendingTxs pendingTxCount={pendingTxCount} />
-          )}
+      <div className={clsx('dashboard')}>
+        <DashboardHeader onSettingClick={toggleShowMoreSettings} />
+        <DashboardPanel onSettingClick={toggleShowMoreSettings} />
+        <div className="px-[16px] pb-[13px]">
+          <GasPriceBar currentConnectedSiteChain={currentConnectedSiteChain} />
+          <CurrentConnection onChainChange={setCurrentConnectedSiteChain} />
         </div>
-        <ChainAndSiteSelector
-          onChange={(currentConnection) => {
-            dispatch.chains.setField({ currentConnection });
-          }}
-          connectionAnimation={connectionAnimation}
-          showDrawer={showToken || showAssets || showNFT}
-          hideAllList={hideAllList}
-          gnosisPendingCount={gnosisPendingCount}
-          isGnosis={isGnosis}
-          higherBottom={isGnosis}
-          setDashboardReload={() => setDashboardReload(true)}
-        />
-        {showGnosisAlert && <GnosisWrongChainAlertBar />}
       </div>
       <Modal
         visible={firstNotice && updateContent}
-        title="What's new"
+        title={t('page.dashboard.home.whatsNew')}
         className="first-notice"
         onCancel={() => {
           dispatch.appVersion.afterFirstLogin();
         }}
         maxHeight="420px"
       >
-        <ReactMarkdown children={updateContent} remarkPlugins={[remarkGfm]} />
-      </Modal>
-      <Modal
-        visible={hovered}
-        closable={false}
-        onCancel={() => {
-          setHovered(false);
-          setStartEdit(false);
-        }}
-        className="address-popover"
-      >
-        <div
-          className="flex flex-col items-center"
-          onClick={() => setStartEdit(false)}
-        >
-          <div className="address-popover__info">
-            <div className="left-container">
-              <div className="flex items-center w-[188px]">
-                <div className="brand-name">
-                  {startEdit ? (
-                    <Input
-                      value={alianName}
-                      defaultValue={alianName}
-                      onChange={handleAlianNameChange}
-                      onPressEnter={alianNameConfirm}
-                      autoFocus={startEdit}
-                      onClick={(e) => e.stopPropagation()}
-                      maxLength={50}
-                      min={0}
-                      style={{ zIndex: 10 }}
-                    />
-                  ) : (
-                    <span title={displayName} className="alias">
-                      {displayName}
-                    </span>
-                  )}
-                  {!startEdit && (
-                    <img
-                      className="edit-name"
-                      src={IconEditPen}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setStartEdit(true);
-                      }}
-                    />
-                  )}
-                </div>
-                {startEdit && (
-                  <img
-                    className="edit-name w-[16px] h-[16px]"
-                    src={alianName ? IconCorrect : IconUnCorrect}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      alianNameConfirm(e);
-                    }}
-                  />
-                )}
-              </div>
-              <div className="address-display">
-                {currentAccount?.address.toLowerCase()}{' '}
-                <img
-                  onClick={handleCopyCurrentAddress}
-                  src={IconAddressCopy}
-                  id={'copyIcon'}
-                  className={clsx(
-                    'ml-7 inline-block mb-2  w-[16px] h-[16px] pointer',
-                    {
-                      success: copySuccess,
-                    }
-                  )}
-                />
-              </div>
-              <div className="import">
-                {currentAccount && (
-                  <img
-                    className="icon icon-account-type w-[16px] h-[16px] pb-1 inline-block"
-                    src={
-                      KEYRING_ICONS[currentAccount.type] ||
-                      WALLET_BRAND_CONTENT[currentAccount.brandName]?.image
-                    }
-                  />
-                )}{' '}
-                {(currentAccount?.type &&
-                  KEYRING_TYPE_TEXT[currentAccount?.type]) ||
-                  (currentAccount && (
-                    <Trans
-                      i18nKey="addressTypeTip"
-                      values={{
-                        type:
-                          WALLET_BRAND_CONTENT[currentAccount?.brandName]?.name,
-                      }}
-                    />
-                  ))}
-              </div>
-            </div>
-            <div className="qrcode-container">
-              <QRCode value={currentAccount?.address} size={100} />
-            </div>
-          </div>
+        <div>
+          <p className="mb-12">{version}</p>
+          <ReactMarkdown children={updateContent} remarkPlugins={[remarkGfm]} />
         </div>
       </Modal>
-      {!(showToken || showAssets || showNFT) && <DefaultWalletSetting />}
+
       {pendingApprovalCount > 0 && (
         <PendingApproval
           onRejectAll={() => {
@@ -561,6 +199,15 @@ const Dashboard = () => {
           count={pendingApprovalCount}
         />
       )}
+
+      <Settings
+        visible={settingVisible}
+        onClose={toggleShowMoreSettings}
+        autoScrollToBiometric={autoScrollToBiometric}
+        onAutoScrollDone={() => {
+          setAutoScrollToBiometric(false);
+        }}
+      />
     </>
   );
 };

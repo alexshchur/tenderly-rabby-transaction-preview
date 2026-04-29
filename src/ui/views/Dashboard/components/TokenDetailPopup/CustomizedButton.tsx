@@ -1,6 +1,7 @@
 import { Switch } from 'antd';
 import clsx from 'clsx';
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import styled from 'styled-components';
 
 export interface Props {
@@ -28,38 +29,40 @@ const SwitchStyled = styled(Switch)`
   }
 `;
 
-export const CustomizedButton: React.FC<Props> = ({
+export const CustomizedSwitch: React.FC<Props> = ({
   selected,
   onOpen,
   onClose,
 }) => {
+  const { t } = useTranslation();
   return (
-    <div
-      className={clsx(
-        'flex rounded',
-        'py-[9px] px-12 bg-orange bg-opacity-20 justify-between mb-[26px]'
-      )}
-    >
-      <div className={clsx('text-orange text-13')}>
-        {selected
-          ? "Token is not listed by Rabby. You've added it to the token list by custom."
-          : `Token is not listed by Rabby. It will be added to the token list if you
-        switch on.`}
-      </div>
-      <label className={clsx('flex items-center gap-x-6 cursor-pointer')}>
-        <SwitchStyled
-          size="small"
-          checked={selected}
-          onChange={(val) => {
-            if (val) {
-              onOpen();
-            } else {
-              onClose();
-            }
-          }}
-        />
-        <span className="text-black text-12">Customized</span>
-      </label>
-    </div>
+    // <div
+    //   className={clsx(
+    //     'flex rounded',
+    //     'py-[9px] px-12 bg-orange bg-opacity-20 justify-between mb-[10px]'
+    //   )}
+    // >
+    //   <div className={clsx('text-orange text-13')}>
+    //     {selected
+    //       ? t('page.dashboard.tokenDetail.selectedCustom')
+    //       : t('page.dashboard.tokenDetail.notSelectedCustom')}
+    //   </div>
+    <label className={clsx('flex items-center gap-x-6 cursor-pointer')}>
+      <span className="text-r-neutral-foot text-12">
+        {t('page.dashboard.tokenDetail.customized')}
+      </span>
+      <SwitchStyled
+        size="small"
+        checked={selected}
+        onChange={(val) => {
+          if (val) {
+            onOpen();
+          } else {
+            onClose();
+          }
+        }}
+      />
+    </label>
+    // </div>
   );
 };

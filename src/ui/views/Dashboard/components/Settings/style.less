@@ -16,7 +16,7 @@
   }
 
   .setting-block .setting-title {
-    color: @color-comment;
+    color: var(--r-neutral-foot, #6a7587);
     font-size: 12px;
     font-style: normal;
     font-weight: 400;
@@ -28,7 +28,7 @@
   }
 
   .setting-items {
-    background: @color-bg;
+    background: var(--r-neutral-card-2, rgba(255, 255, 255, 0.06));
     border-radius: @radius-value;
   }
 
@@ -77,12 +77,13 @@
     }
   }
   .field {
-    background: @color-bg;
+    background: var(--r-neutral-card-2, rgba(255, 255, 255, 0.06));
     border-radius: @radius-value;
     margin-bottom: 8px;
     font-size: 14px;
+    font-weight: 500;
     line-height: 16px;
-    color: @color-title;
+    color: var(--r-neutral-title-1, #f7fafc);
     padding: 0 16px;
     border: 1px solid transparent;
     min-height: 52px;
@@ -119,7 +120,7 @@
     &:hover,
     &.checked {
       background-color: rgba(134, 151, 255, 0.2);
-      border: 1px solid #8697ff;
+      border: 1px solid var(--r-blue-default);
       border-radius: @radius-value;
     }
     .not-default-tip {
@@ -140,16 +141,45 @@
       }
     }
   }
+  .setting-shortcut {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+
+    &-key {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      background: var(--rb-neutral-line);
+      color: var(--r-neutral-body);
+      font-size: 14px;
+      line-height: 20px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    &-text {
+      font-size: 14px;
+      line-height: 16px;
+      color: var(--r-neutral-foot, #6a7587);
+      white-space: nowrap;
+    }
+  }
+  .popup-feedback-inner,
+  .recent-connections-popup,
   .resolve-conflict-modal,
   .openapi-modal,
   .reset-account-modal,
-  .auto-lock-modal {
+  .auto-lock-modal,
+  .ecology-modal,
+  .dapp-account-modal,
+  .switch-theme-modal {
     position: absolute;
     width: 100%;
     height: 100%;
     left: 0;
     top: 0;
-    background-color: #fff;
+    background-color: var(--r-neutral-bg-1, #575b70);
     transform: translateX(100%);
     transition: transform 0.3s;
     padding: 20px;
@@ -161,7 +191,7 @@
     .reset-account-content {
       font-size: 14px;
       line-height: 20px;
-      color: #4b4d59;
+      color: var(--r-neutral-body, #d3d8e0);
       white-space: pre-wrap;
     }
     .reset-account-warn {
@@ -174,7 +204,8 @@
       width: 100%;
       text-align: center;
     }
-    .auto-lock-option-list {
+    .auto-lock-option-list,
+    .switch-theme-option-list {
       overflow: auto;
       max-height: calc(100% - 48px);
       &-item {
@@ -182,11 +213,13 @@
         height: 52px;
         padding: 17px 15px;
         border-radius: 6px;
-        background: #f5f6fa;
+        background: var(--r-neutral-card-2, rgba(255, 255, 255, 0.06));
         align-items: center;
+        margin-bottom: 12px;
 
-        color: #13141a;
+        color: var(--r-neutral-title-1, #f7fafc);
         font-size: 14px;
+        font-weight: 500;
         line-height: 16px;
         border: 1px solid transparent;
 
@@ -194,11 +227,7 @@
 
         &:hover {
           background-color: rgba(134, 151, 255, 0.2);
-          border: 1px solid #8697ff;
-        }
-
-        &:not(:last-child) {
-          margin-bottom: 12px;
+          border: 1px solid var(--r-blue-default, #7084ff);
         }
 
         &-icon {
@@ -214,6 +243,9 @@
     &.show {
       transform: translateX(0);
     }
+  }
+  .auto-lock-modal {
+    padding: 20px 20px 0 20px;
   }
   .resolve-conflict-modal {
     .page-header {
@@ -237,8 +269,8 @@
         }
         &.checked {
           path:nth-child(2) {
-            fill: #8697ff;
-            stroke: #8697ff;
+            fill: var(--r-blue-default, #7084ff);
+            stroke: var(--r-blue-default, #7084ff);
           }
         }
       }
@@ -263,7 +295,7 @@
         font-weight: 500;
         font-size: 16px;
         line-height: 19px;
-        color: @color-title;
+        color: var(--r-neutral-title-1, #f7fafc);
         display: flex;
         align-items: center;
         margin-bottom: 5px;
@@ -276,5 +308,17 @@
         color: @color-body;
       }
     }
+  }
+}
+
+.settings-popup-wrapper .ant-drawer-content {
+  background: var(--r-neutral-bg-1, #575b70);
+}
+.whitelist-confirm-modal {
+  .ant-drawer-content {
+    background: var(--r-neutral-bg2, #f2f4f7) !important;
+  }
+  #password {
+    background-color: var(--r-neutral-card1, #fff) !important;
   }
 }

@@ -4,6 +4,7 @@ import { TokenItem, Props as TokenItemProps } from '../TokenItem';
 import { FixedSizeList } from 'react-window';
 import { TokenDetailPopup } from '@/ui/views/Dashboard/components/TokenDetailPopup';
 import { TokenItem as TokenItemType } from '@/background/service/openapi';
+import { useTranslation } from 'react-i18next';
 
 export interface Props {
   list?: TokenItemProps['item'][];
@@ -22,6 +23,7 @@ export const TokenTable: React.FC<Props> = ({
   const [selected, setSelected] = React.useState<TokenItemProps['item']>();
   const [visible, setVisible] = React.useState(false);
   const [token, setToken] = React.useState<TokenItemType>();
+  const { t } = useTranslation();
 
   React.useEffect(() => {
     setVisible(!!selected);
@@ -41,13 +43,19 @@ export const TokenTable: React.FC<Props> = ({
       {EmptyComponent && !list?.length ? (
         EmptyComponent
       ) : (
-        <Table>
-          <THeader>
-            <THeadCell className="w-[160px]">Asset / Amount</THeadCell>
-            <THeadCell className="w-[90px]">Price</THeadCell>
-            <THeadCell className="w-[110px] text-right">USD Value</THeadCell>
-          </THeader>
-          <TBody className="mt-8">
+        <Table className="!w-full ml-0 mr-0">
+          {/* <THeader>
+            <THeadCell className="w-[160px]">
+              {t('page.dashboard.assets.table.assetAmount')}
+            </THeadCell>
+            <THeadCell className="w-[90px]">
+              {t('page.dashboard.assets.table.price')}
+            </THeadCell>
+            <THeadCell className="w-[110px] text-right">
+              {t('page.dashboard.assets.table.useValue')}
+            </THeadCell>
+          </THeader> */}
+          <TBody className="mt-0">
             {virtual ? (
               <FixedSizeList
                 height={virtual.height}

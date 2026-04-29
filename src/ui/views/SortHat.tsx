@@ -4,6 +4,7 @@ import { Redirect } from 'react-router-dom';
 import { getUiType, useApproval, useWallet } from 'ui/utils';
 import { Spin } from 'ui/component';
 import { Approval } from 'background/service/notification';
+import Browser from 'webextension-polyfill';
 
 const SortHat = () => {
   const wallet = useWallet();
@@ -17,6 +18,7 @@ const SortHat = () => {
     const isInTab = UIType.isTab;
     const approval: Approval | undefined = await getApproval();
     if (isInNotification && !approval) {
+      Browser.runtime.sendMessage({ type: 'closeNotification' });
       window.close();
       return;
     }
@@ -26,8 +28,17 @@ const SortHat = () => {
       return;
     }
 
+    await wallet.tryUnlock();
     if (!(await wallet.isUnlocked())) {
-      setTo('/unlock');
+      if (
+        isInNotification &&
+        approval?.data?.approvalComponent === 'Connect' &&
+        approval?.data?.params?.$ctx?.providers?.length
+      ) {
+        setTo('/connect-approval');
+      } else {
+        setTo('/unlock');
+      }
       return;
     }
     if (
@@ -37,8 +48,13 @@ const SortHat = () => {
       !approval
     ) {
       const cache = (await wallet.getPageStateCache())!;
-      setTo(cache.path + (cache.search || ''));
-      return;
+      if (cache.path && cache.path !== '/') {
+        // prevent path is empty then extension will stuck
+        setTo(cache.path + (cache.search || ''));
+        return;
+      } else {
+        wallet.clearPageStateCache();
+      }
     }
 
     const currentAccount = await wallet.getCurrentAccount();

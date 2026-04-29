@@ -1,26 +1,28 @@
-// import './wdyr';
 import React from 'react';
-import ReactDOM from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { Provider } from 'react-redux';
+import BigNumber from 'bignumber.js';
 import Views from './views';
-import { Message } from '@/utils';
-import { getUITypeName } from 'ui/utils';
+import { Message } from '@/utils/message';
+import { getUiType, getUITypeName } from 'ui/utils';
 import eventBus from '@/eventBus';
 import * as Sentry from '@sentry/react';
-import { Integrations } from '@sentry/tracing';
-import i18n, { addResourceBundle } from 'src/i18n';
+import i18n, { addResourceBundle, changeLanguage } from 'src/i18n';
 import { EVENTS } from 'consts';
+import browser from 'webextension-polyfill';
 
 import type { WalletControllerType } from 'ui/utils/WalletContext';
 
 import store from './store';
 
-import '../i18n';
-import { getSentryEnv } from '@/utils/env';
+import { getSentryEnv, isManifestV3 } from '@/utils/env';
+import { updateChainStore } from '@/utils/chain';
+
+BigNumber.config({ EXPONENTIAL_AT: [-20, 100] });
 
 Sentry.init({
   dsn:
-    'https://e871ee64a51b4e8c91ea5fa50b67be6b@o460488.ingest.sentry.io/5831390',
+    'https://f4a992c621c55f48350156a32da4778d@o4507018303438848.ingest.us.sentry.io/4507018389749760',
   release: process.env.release,
   environment: getSentryEnv(),
   ignoreErrors: [
@@ -29,14 +31,23 @@ Sentry.init({
     'Network Error',
     'Request limit exceeded.',
     'Non-Error promise rejection captured with keys: code, message',
+    'Non-Error promise rejection captured with keys: message, stack',
     'Failed to fetch',
+    'Non-Error promise rejection captured with keys: message',
+    /Non-Error promise rejection captured/,
+    /\[From .*\]/, // error from custom rpc
+    /AxiosError/,
+    /WebSocket connection failed/,
+    /Could not establish connection/,
+    /HttpRequestError/,
   ],
 });
 
 function initAppMeta() {
   const head = document.querySelector('head');
   const icon = document.createElement('link');
-  icon.href = 'https://rabby.io/assets/images/logo-128.png';
+  icon.href =
+    'https://static-assets.debank.com/files/10eaa959-f65a-4488-8b5a-976aa189bcc4.png';
   icon.rel = 'icon';
   head?.appendChild(icon);
   const name = document.createElement('meta');
@@ -45,7 +56,7 @@ function initAppMeta() {
   head?.appendChild(name);
   const description = document.createElement('meta');
   description.name = 'description';
-  description.content = i18n.t('appDescription');
+  description.content = i18n.t('global.appDescription');
   head?.appendChild(description);
 }
 
@@ -54,8 +65,6 @@ initAppMeta();
 const { PortMessage } = Message;
 
 const portMessageChannel = new PortMessage();
-
-portMessageChannel.connect(getUITypeName());
 
 const wallet = new Proxy(
   {},
@@ -94,6 +103,22 @@ const wallet = new Proxy(
             }
           );
           break;
+        case 'fakeTestnetOpenapi':
+          return new Proxy(
+            {},
+            {
+              get(obj, key) {
+                return function (...params: any) {
+                  return portMessageChannel.request({
+                    type: 'fakeTestnetOpenapi',
+                    method: key,
+                    params,
+                  });
+                };
+              },
+            }
+          );
+          break;
         default:
           return function (...params: any) {
             return portMessageChannel.request({
@@ -122,11 +147,103 @@ eventBus.addEventListener(EVENTS.broadcastToBackground, (data) => {
 });
 
 store.dispatch.app.initWallet({ wallet });
-store.dispatch.app.initBizStore();
 
-ReactDOM.render(
-  <Provider store={store}>
-    <Views wallet={wallet} />
-  </Provider>,
-  document.getElementById('root')
-);
+eventBus.addEventListener('syncChainList', (params) => {
+  store.dispatch.chains.setField(params);
+  updateChainStore(params);
+});
+
+const compensateUnlockedOnceFlag = async () => {
+  try {
+    if (store.getState().app.hasUnlockedOnce) return;
+    const isUnlocked = await wallet.isUnlocked();
+    if (isUnlocked) {
+      store.dispatch.app.setField({
+        hasUnlockedOnce: true,
+      });
+    }
+  } catch (e) {
+    console.log('[compensateUnlockedOnceFlag] failed', e);
+  }
+};
+
+const rootContainer = document.getElementById('root');
+const root = rootContainer ? createRoot(rootContainer) : null;
+
+const main = async () => {
+  portMessageChannel.connect(getUITypeName());
+  await compensateUnlockedOnceFlag();
+
+  store.dispatch.app.initBizStore();
+  store.dispatch.chains.init();
+
+  if (getUiType().isPop) {
+    wallet.tryOpenOrActiveUserGuide().then((opened) => {
+      if (opened) {
+        window.close();
+      }
+    });
+  }
+
+  wallet.getLocale().then((locale) => {
+    addResourceBundle(locale).then(() => {
+      changeLanguage(locale);
+      root?.render(
+        <Provider store={store}>
+          <Views wallet={wallet} />
+        </Provider>
+      );
+    });
+  });
+};
+
+const bootstrap = () => {
+  if (!isManifestV3) {
+    main();
+    return;
+  }
+  browser.runtime.sendMessage({ type: 'getBackgroundReady' }).then((res) => {
+    if (!res) {
+      setTimeout(() => {
+        bootstrap();
+      }, 100);
+      return;
+    }
+
+    main();
+  });
+};
+
+bootstrap();
+
+const checkSwAlive = () => {
+  console.log('[checkSwAlive]', new Date());
+  Promise.race([
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('timeout')), 5000)
+    ),
+    browser.runtime.sendMessage({
+      type: 'ping',
+    }),
+  ])
+    .then(() => {
+      console.log('[checkSwAlive] sw is alive');
+    })
+    .catch((e) => {
+      if (e.message === 'timeout') {
+        console.log('[checkSwAlive] sw is inactive', e);
+        Sentry.captureException(
+          'sw is inactive' +
+            (browser.runtime.lastError ? ':' + browser.runtime.lastError : '')
+        );
+      } else {
+        console.log('[checkSwAlive] sw is dead');
+        Sentry.captureMessage(
+          'sw is dead:' +
+            e.message +
+            (browser.runtime.lastError ? ':' + browser.runtime.lastError : '')
+        );
+      }
+    });
+};
+checkSwAlive();

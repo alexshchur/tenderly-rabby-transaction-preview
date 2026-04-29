@@ -1,24 +1,18 @@
 import React from 'react';
-import { useCommonPopupView, useWallet } from '@/ui/utils';
-import { useLedgerDeviceConnected } from '@/utils/ledger';
+import { useCommonPopupView } from '@/ui/utils';
+import { useLedgerDeviceConnected } from '@/ui/utils/ledger';
+import { useTranslation } from 'react-i18next';
 
 export const useLedgerStatus = () => {
-  const wallet = useWallet();
   const { activePopup } = useCommonPopupView();
   const hasConnectedLedgerHID = useLedgerDeviceConnected();
-  const [useLedgerLive, setUseLedgerLive] = React.useState(false);
   const [content, setContent] = React.useState<string>();
 
   const status: 'CONNECTED' | 'DISCONNECTED' = React.useMemo(() => {
-    if (useLedgerLive) {
-      return 'CONNECTED';
-    }
     return hasConnectedLedgerHID ? 'CONNECTED' : 'DISCONNECTED';
-  }, [hasConnectedLedgerHID, useLedgerLive]);
+  }, [hasConnectedLedgerHID]);
 
-  React.useEffect(() => {
-    wallet.isUseLedgerLive().then(setUseLedgerLive);
-  }, []);
+  const { t } = useTranslation();
 
   const onClickConnect = () => {
     activePopup('Ledger');
@@ -26,9 +20,9 @@ export const useLedgerStatus = () => {
 
   React.useEffect(() => {
     if (status === 'DISCONNECTED') {
-      setContent('Ledger is not connected');
+      setContent(t('component.ConnectStatus.ledgerNotConnected'));
     } else {
-      setContent('Ledger is connected');
+      setContent(t('component.ConnectStatus.ledgerConnected'));
     }
   }, [status]);
 

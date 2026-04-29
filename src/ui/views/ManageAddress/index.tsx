@@ -1,28 +1,55 @@
 import { KEYRING_CLASS, KEYRING_TYPE } from '@/constant';
-import { Empty, PageHeader } from '@/ui/component';
+import { PageHeader } from '@/ui/component';
 import { useRabbyDispatch } from '@/ui/store';
 import React, { useCallback, useState } from 'react';
 import { IDisplayedAccountWithBalance } from 'ui/models/accountToDisplay';
-import { ReactComponent as IconShowSeedPhrase } from '@/ui/assets/address/show-seed-phrase.svg';
-import { ReactComponent as IconDelete } from '@/ui/assets/address/delete-current-color.svg';
 import { ReactComponent as IconPlus } from '@/ui/assets/address/plus.svg';
-import { ReactComponent as IconPlusButton } from '@/ui/assets/import/plus.svg';
+import { ReactComponent as RcIconShowSeedPhrase } from '@/ui/assets/address/show-seed-phrase.svg';
+import { ReactComponent as RcIconDelete } from '@/ui/assets/address/delete-current-color.svg';
+import { ReactComponent as RcIconPlusButton } from '@/ui/assets/import/plus.svg';
 
 import { openInternalPageInTab, useWallet } from '@/ui/utils';
 
 import { useHistory, useLocation } from 'react-router-dom';
 import AuthenticationModalPromise from '@/ui/component/AuthenticationModal';
 import { AddressDeleteModal } from './AddressDeleteModal';
-import { Button, message } from 'antd';
+import { Button, message, Spin } from 'antd';
 import IconSuccess from '@/ui/assets/success.svg';
 import { GroupItem } from './GroupItem';
 import { useBackUp, useWalletTypeData } from './hooks';
 import { SeedPhraseDeleteModal } from './SeedPhraseDelete';
 import { AccountList } from './List';
-import { LedgerHDPathTypeLabel } from '@/utils/ledger';
+import { LedgerHDPathTypeLabel } from '@/ui/utils/ledger';
+import { useTranslation } from 'react-i18next';
+import { query2obj } from '@/ui/utils/url';
+import { useEnterPassphraseModal } from '@/ui/hooks/useEnterPassphraseModal';
+import { ReactComponent as RcIconEmpty } from '@/ui/assets/empty-cc.svg';
+import styled from 'styled-components';
+
+const SpinWrapper = styled.div`
+  .ant-spin-container {
+    height: 100%;
+  }
+`;
+
+const buildRemoveAddressPayload = (
+  item: IDisplayedAccountWithBalance,
+  removeEmptyKeyrings: boolean
+) =>
+  [item.address, item.type, item.brandName, removeEmptyKeyrings] as [
+    string,
+    string,
+    string | undefined,
+    boolean
+  ];
 
 const ManageAddress = () => {
+  const { t } = useTranslation();
   const history = useHistory();
+  const { search } = useLocation();
+  const [{ back = false }] = useState<{
+    back?: boolean;
+  }>(query2obj(search));
 
   const wallet = useWallet();
 
@@ -57,18 +84,18 @@ const ManageAddress = () => {
   const [deleteList, setDeleteList] = useState<IDisplayedAccountWithBalance[]>(
     []
   );
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   const AuthenticationDeleteModalPromise = useCallback(
     async (title: string, onFinished: () => void, onCancel?: () => void) => {
       await AuthenticationModalPromise({
-        confirmText: 'Confirm',
-        cancelText: 'Cancel',
+        confirmText: t('page.manageAddress.confirm'),
+        cancelText: t('page.manageAddress.cancel'),
         title: title,
-        description:
-          'Before you delete, keep the following points in mind to understand how to protect your assets.',
+        description: t('page.manageAddress.delete-desc'),
         checklist: [
-          'I understand that if I delete this address, the corresponding Private Key & Seed Phrase of this address will be deleted and Rabby will NOT be able to recover it.',
-          "I confirm that I have backuped the private key or Seed Phrase and I'm ready to delete it now.",
+          t('page.manageAddress.delete-checklist-1'),
+          t('page.manageAddress.delete-checklist-2'),
         ],
         async onFinished() {
           await onFinished();
@@ -102,26 +129,28 @@ const ManageAddress = () => {
 
       if (list?.[0].type === KEYRING_TYPE['SimpleKeyring']) {
         const count = list.length;
-        const title = `Delete ${count} private key ${
-          count > 1 ? 'addresses' : 'address'
-        }`;
+        const title = t('page.manageAddress.delete-private-key-modal-title', {
+          count,
+        });
 
         await AuthenticationDeleteModalPromise(title, async () => {
-          if (list.length) {
-            await Promise.all(
-              list.map(
-                async (e) =>
-                  await wallet.removeAddress(
-                    e.address,
-                    e.type,
-                    e.brandName,
-                    true
-                  )
-              )
-            );
-          }
+          setBatchDeleting(true);
+          try {
+            if (list.length) {
+              await wallet.removeAddresses(
+                list.map((item) => buildRemoveAddressPayload(item, true))
+              );
+            }
 
-          updateInfoAndSetCurrentIndex(deleteGroup);
+            await updateInfoAndSetCurrentIndex(deleteGroup);
+            message.success({
+              icon: <img src={IconSuccess} className="icon icon-success" />,
+              content: t('page.manageAddress.deleteSuccess'),
+              duration: 0.5,
+            });
+          } finally {
+            setBatchDeleting(false);
+          }
         });
         return;
       }
@@ -130,29 +159,31 @@ const ManageAddress = () => {
     },
     [
       AuthenticationDeleteModalPromise,
-      wallet?.removeAddress,
+      wallet?.removeAddresses,
       updateInfoAndSetCurrentIndex,
     ]
   );
 
   const handleConfirmDeleteAddress = async () => {
-    if (deleteList.length) {
-      await Promise.all(
-        deleteList.map(
-          async (e) =>
-            await wallet.removeAddress(e.address, e.type, e.brandName, false)
-        )
-      );
+    setBatchDeleting(true);
+    try {
+      if (deleteList.length) {
+        await wallet.removeAddresses(
+          deleteList.map((item) => buildRemoveAddressPayload(item, false))
+        );
+      }
+
+      await updateInfoAndSetCurrentIndex(deleteGroup);
+
+      setOpen(false);
+      message.success({
+        icon: <img src={IconSuccess} className="icon icon-success" />,
+        content: t('page.manageAddress.deleteSuccess'),
+        duration: 0.5,
+      });
+    } finally {
+      setBatchDeleting(false);
     }
-
-    await updateInfoAndSetCurrentIndex(deleteGroup);
-
-    setOpen(false);
-    message.success({
-      icon: <img src={IconSuccess} className="icon icon-success" />,
-      content: 'Deleted',
-      duration: 0.5,
-    });
   };
 
   const handleOpenDeleteSeedPhraseModal = async (
@@ -165,33 +196,41 @@ const ManageAddress = () => {
     }
 
     const count = TypedWalletObj?.[activeIndex].list?.length || 0;
-    const title = `Delete seed phrase and its ${count} ${
-      count > 1 ? 'addresses' : 'address'
-    }`;
-    await AuthenticationDeleteModalPromise(title, async () => {
-      if (TypedWalletObj && TypedWalletObj?.[activeIndex]?.list?.length) {
-        await Promise.all(
-          TypedWalletObj?.[activeIndex]?.list?.map((e) =>
-            wallet.removeAddress(
-              e.address,
-              e.type,
-              e.brandName,
-              deleteSeedPhraseGroup
-            )
-          )
-        );
-      } else if (TypedWalletObj?.[activeIndex]?.publicKey) {
-        await wallet.removeMnemonicsKeyRingByPublicKey(
-          TypedWalletObj[activeIndex].publicKey!
-        );
-      }
+    const title = t('page.manageAddress.delete-seed-phrase-title', {
+      count,
+    });
 
-      await updateInfoAndSetCurrentIndex(deleteSeedPhraseGroup);
+    await AuthenticationDeleteModalPromise(title, async () => {
+      setBatchDeleting(true);
+      try {
+        if (TypedWalletObj && TypedWalletObj?.[activeIndex]?.list?.length) {
+          await wallet.removeAddresses(
+            TypedWalletObj[activeIndex].list.map((item) =>
+              buildRemoveAddressPayload(item, deleteSeedPhraseGroup)
+            )
+          );
+        } else if (TypedWalletObj?.[activeIndex]?.publicKey) {
+          await wallet.removeMnemonicsKeyRingByPublicKey(
+            TypedWalletObj[activeIndex].publicKey!
+          );
+        }
+
+        await updateInfoAndSetCurrentIndex(deleteSeedPhraseGroup);
+        message.success({
+          icon: <img src={IconSuccess} className="icon icon-success" />,
+          content: t('page.manageAddress.deleteSuccess'),
+          duration: 0.5,
+        });
+      } finally {
+        setBatchDeleting(false);
+      }
     });
   };
 
+  const invokeEnterPassphrase = useEnterPassphraseModal('publickey');
   const handleAddSeedPhraseAddress = async () => {
     if (TypedWalletObj?.[activeIndex]?.publicKey) {
+      await invokeEnterPassphrase(TypedWalletObj?.[activeIndex]?.publicKey);
       const keyringId = await wallet.getMnemonicKeyRingIdFromPublicKey(
         TypedWalletObj[activeIndex].publicKey!
       );
@@ -203,7 +242,7 @@ const ManageAddress = () => {
 
   const handleDeleteEmptySeedPhrase = async () => {
     await AuthenticationDeleteModalPromise(
-      'Delete seed phrase and its 0 address',
+      t('page.manageAddress.delete-empty-seed-phrase'),
 
       async () => {
         if (TypedWalletObj?.[activeIndex]?.publicKey) {
@@ -218,149 +257,172 @@ const ManageAddress = () => {
   };
 
   if (currentIndex < 0) {
-    history.replace('/add-address');
+    history.replace('/no-address');
     return null;
   }
 
   return (
-    <div className="page-address-management px-0 pb-0 bg-[#F0F2F5] overflow-hidden">
-      <div className="h-full flex flex-col">
-        <div className="px-20">
-          <PageHeader className="pt-[24px]">Manage Address</PageHeader>
-        </div>
-
-        <div className="flex-1 flex flex-col overflow-y-auto">
-          <div className="px-20 mb-8">
-            <div className="rounded-[6px] bg-white flex flex-wrap p-[3px]">
-              {typedWalletIdList?.map((id, i) => {
-                const item = TypedWalletObj?.[id];
-                const list = item?.list;
-                if (!item) {
-                  return null;
-                }
-                return (
-                  <GroupItem
-                    item={list?.[0]}
-                    active={i === currentIndex}
-                    count={list?.length || 0}
-                    onChange={() => {
-                      setCurrentIndex(i);
-                    }}
-                    type={item?.type}
-                    brandName={item?.brandName}
-                  />
-                );
-              })}
+    <div className="page-address-management px-0 pb-0 bg-r-neutral-bg-2 overflow-hidden">
+      <SpinWrapper className="h-full">
+        <Spin
+          spinning={batchDeleting}
+          className="h-full"
+          wrapperClassName="h-full"
+        >
+          <div className="h-full flex flex-col">
+            <div className="px-20">
+              <PageHeader
+                className="pt-[24px]"
+                canBack={back}
+                closeable={!back}
+              >
+                {t('page.manageAddress.manage-address')}
+              </PageHeader>
             </div>
 
-            {TypedWalletObj?.[activeIndex] ? (
-              <div className="flex items-center justify-between mt-20 ">
-                <div className="text-[17px] font-medium">
-                  {TypedWalletObj?.[activeIndex]?.name}
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <div className="px-20 mb-8">
+                <div className="rounded-[6px] bg-r-neutral-card-1 flex flex-wrap p-[3px]">
+                  {typedWalletIdList?.map((id, i) => {
+                    const item = TypedWalletObj?.[id];
+                    const list = item?.list;
+                    if (!item) {
+                      return null;
+                    }
+                    return (
+                      <GroupItem
+                        item={list?.[0]}
+                        active={i === currentIndex}
+                        count={list?.length || 0}
+                        onChange={() => {
+                          setCurrentIndex(i);
+                        }}
+                        type={item?.type}
+                        brandName={item?.brandName}
+                      />
+                    );
+                  })}
                 </div>
-                <div className="flex items-center gap-16">
-                  {isSeedPhrase && (
-                    <IconPlusButton
-                      onClick={handleAddSeedPhraseAddress}
-                      className="cursor-pointer"
-                    />
-                  )}
-                  {isSeedPhrase && (
-                    <IconShowSeedPhrase
-                      className="cursor-pointer"
-                      onClick={() => {
-                        if (TypedWalletObj?.[activeIndex]?.publicKey) {
-                          backup(
-                            TypedWalletObj[activeIndex].publicKey!,
-                            currentIndex
+
+                {TypedWalletObj?.[activeIndex] ? (
+                  <div className="flex items-center justify-between mt-20 ">
+                    <div className="text-[17px] text-r-neutral-title-1 font-medium">
+                      {TypedWalletObj?.[activeIndex]?.name}
+                    </div>
+                    <div className="flex items-center gap-16">
+                      {isSeedPhrase && (
+                        <RcIconPlusButton
+                          onClick={handleAddSeedPhraseAddress}
+                          className="cursor-pointer text-r-neutral-body"
+                        />
+                      )}
+                      {isSeedPhrase && (
+                        <RcIconShowSeedPhrase
+                          className="cursor-pointer text-r-neutral-body"
+                          onClick={() => {
+                            if (TypedWalletObj?.[activeIndex]?.publicKey) {
+                              backup(
+                                TypedWalletObj[activeIndex].publicKey!,
+                                currentIndex
+                              );
+                            }
+                          }}
+                        />
+                      )}
+                      <RcIconDelete
+                        className="cursor-pointer text-r-neutral-body hover:text-red-forbidden"
+                        onClick={() => {
+                          if (
+                            TypedWalletObj?.[activeIndex]?.type ===
+                            KEYRING_TYPE['HdKeyring']
+                          ) {
+                            setSeedPhraseDeleteOpen(true);
+                            return;
+                          }
+                          handleOpenDeleteModal(
+                            TypedWalletObj?.[activeIndex]?.list
                           );
-                        }
-                      }}
-                    />
-                  )}
-                  <IconDelete
-                    className="cursor-pointer text-gray-content hover:text-red-forbidden"
-                    onClick={() => {
-                      if (
-                        TypedWalletObj?.[activeIndex]?.type ===
-                        KEYRING_TYPE['HdKeyring']
-                      ) {
-                        setSeedPhraseDeleteOpen(true);
-                        return;
-                      }
-                      handleOpenDeleteModal(
-                        TypedWalletObj?.[activeIndex]?.list
-                      );
-                    }}
-                  />
-                </div>
-              </div>
-            ) : null}
-
-            {!!isLedger && !!TypedWalletObj?.[activeIndex]?.hdPathType && (
-              <div className="text-gray-content text-12 mb-4">
-                HD path:{' '}
-                {LedgerHDPathTypeLabel[TypedWalletObj[activeIndex].hdPathType!]}
-              </div>
-            )}
-          </div>
-
-          <AccountList
-            handleOpenDeleteModal={handleOpenDeleteModal}
-            list={TypedWalletObj?.[activeIndex]?.list}
-            highlightedAddresses={highlightedAddresses}
-            updateIndex={updateInfoAndSetCurrentIndex}
-          />
-
-          {TypedWalletObj?.[activeIndex]?.type === KEYRING_TYPE['HdKeyring'] &&
-          !TypedWalletObj?.[activeIndex]?.list.length ? (
-            <div className="flex-1 flex flex-col items-center justify-center gap-[30px] min-h-[300px]">
-              <Empty
-                desc={
-                  <div className="text-gray-content text-14 max-w-[296px] mt-12">
-                    You haven't imported any addresses under this seed phrase.
+                        }}
+                      />
+                    </div>
                   </div>
-                }
-              />
-              <div>
-                <Button
-                  type="primary"
-                  className="w-[140px] h-[36px] rounder-[4px] flex items-center justify-center gap-4 text-13 font-medium"
-                  icon={<IconPlus />}
-                  onClick={handleAddSeedPhraseAddress}
-                >
-                  Add address
-                </Button>
-                <div
-                  className="mt-20 cursor-pointer underline text-gray-content text-14 text-center"
-                  onClick={handleDeleteEmptySeedPhrase}
-                >
-                  Delete seed phrase
-                </div>
+                ) : null}
+
+                {!!isLedger && !!TypedWalletObj?.[activeIndex]?.hdPathType && (
+                  <div className="text-r-neutral-body text-12 mb-4">
+                    {t('page.manageAddress.hd-path')}{' '}
+                    {
+                      LedgerHDPathTypeLabel[
+                        TypedWalletObj[activeIndex].hdPathType!
+                      ]
+                    }
+                  </div>
+                )}
               </div>
+
+              <AccountList
+                handleOpenDeleteModal={handleOpenDeleteModal}
+                list={TypedWalletObj?.[activeIndex]?.list}
+                highlightedAddresses={highlightedAddresses}
+                updateIndex={updateInfoAndSetCurrentIndex}
+              />
+
+              {TypedWalletObj?.[activeIndex]?.type ===
+                KEYRING_TYPE['HdKeyring'] &&
+              !TypedWalletObj?.[activeIndex]?.list.length ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-[24px] min-h-[300px]">
+                  <div className="flex flex-col justify-center items-center gap-[12px]">
+                    <RcIconEmpty
+                      viewBox="0 0 40 40"
+                      className="w-[28px] h-[28px] text-r-neutral-body"
+                    />
+                    <div className="text-r-neutral-body text-[13px] max-w-[352px] text-center">
+                      {t('page.manageAddress.noSeedPhraseAddress')}
+                    </div>
+                  </div>
+
+                  <div>
+                    <Button
+                      type="primary"
+                      className="w-[186px] h-[44px] rounder-[4px] flex items-center justify-center gap-4 text-15 font-medium"
+                      icon={<IconPlus />}
+                      onClick={handleAddSeedPhraseAddress}
+                    >
+                      {t('page.manageAddress.add-address')}
+                    </Button>
+                    <Button
+                      type="ghost"
+                      className="w-[186px] h-[44px] rounder-[4px] mt-12 text-r-red-default text-15 font-medium  border-rabby-red-default"
+                      onClick={handleDeleteEmptySeedPhrase}
+                    >
+                      {t('page.manageAddress.delete-seed-phrase')}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              {TypedWalletObj && deleteList.length ? (
+                <AddressDeleteModal
+                  visible={open}
+                  onClose={() => setOpen(false)}
+                  onSubmit={handleConfirmDeleteAddress}
+                  loading={batchDeleting}
+                  item={deleteList[0]}
+                  count={deleteList.length || 0}
+                />
+              ) : null}
             </div>
-          ) : null}
-
-          {TypedWalletObj && deleteList.length ? (
-            <AddressDeleteModal
-              visible={open}
-              onClose={() => setOpen(false)}
-              onSubmit={handleConfirmDeleteAddress}
-              item={deleteList[0]}
-              count={deleteList.length || 0}
+            <SeedPhraseDeleteModal
+              visible={seedPhraseDeleteOpen}
+              onClose={function (): void {
+                setSeedPhraseDeleteOpen(false);
+              }}
+              onSubmit={handleOpenDeleteSeedPhraseModal}
+              emptyAddress={TypedWalletObj?.[activeIndex]?.list.length === 0}
             />
-          ) : null}
-        </div>
-
-        <SeedPhraseDeleteModal
-          visible={seedPhraseDeleteOpen}
-          onClose={function (): void {
-            setSeedPhraseDeleteOpen(false);
-          }}
-          onSubmit={handleOpenDeleteSeedPhraseModal}
-          emptyAddress={TypedWalletObj?.[activeIndex]?.list.length === 0}
-        />
-      </div>
+          </div>
+        </Spin>
+      </SpinWrapper>
     </div>
   );
 };

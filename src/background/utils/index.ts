@@ -1,6 +1,8 @@
-import * as ethUtil from 'ethereumjs-util';
 import pageStateCache from '../service/pageStateCache';
-export { default as createPersistStore } from './persisitStore';
+import { isManifestV3 } from '@/utils/env';
+import { addHexPrefix, bytesToHex, toBytes } from '@ethereumjs/util';
+import browser from 'webextension-polyfill';
+export { default as createPersistStore } from './persistStore';
 
 // {a:{b: string}} => {1: 'a.b'}
 // later same [source] value will override [result] key generated before
@@ -42,8 +44,8 @@ export function normalizeAddress(input: number | string): string {
   }
 
   if (typeof input === 'number') {
-    const buffer = ethUtil.toBuffer(input);
-    input = ethUtil.bufferToHex(buffer);
+    const buffer = toBytes(input);
+    input = bytesToHex(buffer);
   }
 
   if (typeof input !== 'string') {
@@ -52,17 +54,8 @@ export function normalizeAddress(input: number | string): string {
     throw new Error(msg);
   }
 
-  return ethUtil.addHexPrefix(input);
+  return addHexPrefix(input);
 }
-
-export const wait = (fn: () => void, ms = 1000) => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      fn();
-      resolve(true);
-    }, ms);
-  });
-};
 
 export const setPageStateCacheWhenPopupClose = (data) => {
   const cache = pageStateCache.get();
@@ -89,17 +82,41 @@ export const isSameAddress = (a: string, b: string) => {
   return a.toLowerCase() === b.toLowerCase();
 };
 
-export const setPopupIcon = (type: 'default' | 'rabby' | 'metamask') => {
+export const setPopupIcon = (
+  type: 'default' | 'rabby' | 'metamask' | 'locked'
+) => {
   const icons = [16, 19, 32, 48, 128].reduce((res, size) => {
-    if (type === 'default') {
-      res[size] = `images/icon-${size}.png`;
+    if (type === 'locked') {
+      res[size] = `images/icon-lock-${size}.png`;
     } else {
-      res[size] = `images/icon-default-${type}-${size}.png`;
+      res[size] = `images/icon-${size}.png`;
     }
     return res;
   }, {});
-  return chrome.browserAction.setIcon({
+  const action = isManifestV3 ? browser.action : browser.browserAction;
+  return action.setIcon({
     path: icons,
+  });
+};
+
+export const withTimeout = <T>(
+  promise: Promise<T>,
+  timeout: number
+): Promise<T> => {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('Request timed out')),
+      timeout
+    );
+    promise
+      .then((result: T) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((err: any) => {
+        clearTimeout(timer);
+        reject(err);
+      });
   });
 };
 

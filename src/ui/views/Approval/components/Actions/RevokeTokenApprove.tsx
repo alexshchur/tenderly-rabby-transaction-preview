@@ -1,15 +1,19 @@
 import React, { useEffect } from 'react';
 import styled from 'styled-components';
-import { Chain } from 'background/service/openapi';
+import { useTranslation } from 'react-i18next';
 import { Result } from '@rabby-wallet/rabby-security-engine';
-import { ApproveTokenRequireData, ParsedActionData } from './utils';
-import { ellipsisTokenSymbol, getTokenSymbol } from 'ui/utils/token';
+import {
+  ApproveTokenRequireData,
+  ParsedTransactionActionData,
+} from '@rabby-wallet/rabby-action';
 import { useRabbyDispatch } from '@/ui/store';
 import { Table, Col, Row } from './components/Table';
 import LogoWithText from './components/LogoWithText';
 import * as Values from './components/Values';
 import { ProtocolListItem } from './components/ProtocolListItem';
 import ViewMore from './components/ViewMore';
+import { SubCol, SubRow, SubTable } from './components/SubTable';
+import { Chain } from '@/types/chain';
 
 const Wrapper = styled.div`
   .header {
@@ -35,7 +39,7 @@ const TokenApprove = ({
   requireData,
   chain,
 }: {
-  data: ParsedActionData['approveToken'];
+  data: ParsedTransactionActionData['approveToken'];
   requireData: ApproveTokenRequireData;
   chain: Chain;
   raw: Record<string, string | number>;
@@ -44,16 +48,14 @@ const TokenApprove = ({
 }) => {
   const actionData = data!;
   const dispatch = useRabbyDispatch();
-
-  useEffect(() => {
-    dispatch.securityEngine.init();
-  }, []);
+  const { t } = useTranslation();
+  const isTestnet = chain.isTestnet;
 
   return (
     <Wrapper>
       <Table>
         <Col>
-          <Row isTitle>Revoke token</Row>
+          <Row isTitle>{t('page.signTx.revokeTokenApprove.revokeToken')}</Row>
           <Row>
             <LogoWithText
               logo={actionData.token.logo_url}
@@ -63,27 +65,46 @@ const TokenApprove = ({
           </Row>
         </Col>
         <Col>
-          <Row isTitle>Revoke from</Row>
+          <Row isTitle itemsCenter>
+            {t('page.signTx.revokeTokenApprove.revokeFrom')}
+          </Row>
           <Row>
-            <div>
-              <Values.Address address={actionData.spender} chain={chain} />
-            </div>
-            <ul className="desc-list">
-              <ProtocolListItem protocol={requireData.protocol} />
-              <li>
-                <ViewMore
-                  type="spender"
-                  data={{
-                    ...requireData,
-                    spender: actionData.spender,
-                    chain,
-                    isRevoke: true,
-                  }}
+            {isTestnet ? (
+              <Values.Address
+                id="revoke-token-address"
+                hasHover
+                address={actionData.spender}
+                chain={chain}
+              />
+            ) : (
+              <ViewMore
+                type="spender"
+                data={{
+                  ...requireData,
+                  spender: actionData.spender,
+                  chain,
+                  isRevoke: true,
+                }}
+              >
+                <Values.Address
+                  id="revoke-token-address"
+                  hasHover
+                  address={actionData.spender}
+                  chain={chain}
                 />
-              </li>
-            </ul>
+              </ViewMore>
+            )}
           </Row>
         </Col>
+
+        <SubTable target="revoke-token-address">
+          <SubCol>
+            <SubRow isTitle>{t('page.signTx.protocol')}</SubRow>
+            <SubRow>
+              <ProtocolListItem protocol={requireData.protocol} />
+            </SubRow>
+          </SubCol>
+        </SubTable>
       </Table>
     </Wrapper>
   );

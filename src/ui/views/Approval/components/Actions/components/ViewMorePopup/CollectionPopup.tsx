@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Table, Col, Row } from '../Table';
 import * as Values from '../Values';
 import { Chain } from 'background/service/openapi';
@@ -40,15 +41,16 @@ const Title = styled.div`
 `;
 
 export const CollectionPopup: React.FC<Props> = ({ data }) => {
+  const { t } = useTranslation();
   return (
     <div>
       <Title>
-        <span className="left">NFT Collection</span>
+        <span className="left">{t('page.signTx.nftCollection')}</span>
         <span className="right">{data.collection.name}</span>
       </Title>
       <Table className="view-more-table">
         <Col>
-          <Row className="bg-[#F6F8FF]">Floor price</Row>
+          <Row>{t('page.signTx.floorPrice')}</Row>
           <Row>
             {data.collection.floor_price !== null
               ? `${formatAmount(data.collection.floor_price)} ETH`
@@ -56,9 +58,12 @@ export const CollectionPopup: React.FC<Props> = ({ data }) => {
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Contract address</Row>
+          <Row>{t('page.signTx.contractAddress')}</Row>
           <Row>
-            <Values.Address address={data.collection.id} chain={data.chain} />
+            <Values.AddressWithCopy
+              address={data.collection.id}
+              chain={data.chain}
+            />
           </Row>
         </Col>
       </Table>

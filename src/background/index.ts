@@ -1,47 +1,84 @@
-import { groupBy } from 'lodash';
-import 'reflect-metadata';
-import * as Sentry from '@sentry/browser';
-import { browser } from 'webextension-polyfill-ts';
-import { ethErrors } from 'eth-rpc-errors';
-import { WalletController } from 'background/controller/wallet';
-import { Message } from '@/utils';
-import { CHAINS, EVENTS, KEYRING_CATEGORY_MAP } from 'consts';
-import { storage } from './webapi';
-import {
-  permissionService,
-  preferenceService,
-  sessionService,
-  keyringService,
-  openapiService,
-  transactionWatchService,
-  pageStateCacheService,
-  transactionHistoryService,
-  contactBookService,
-  signTextHistoryService,
-  whitelistService,
-  swapService,
-  RPCService,
-  securityEngineService,
-} from './service';
-import { providerController, walletController } from './controller';
-import i18n from './service/i18n';
-import { getOriginFromUrl } from '@/utils';
-import rpcCache from './utils/rpcCache';
 import eventBus from '@/eventBus';
 import migrateData from '@/migrations';
-import stats from '@/stats';
-import createSubscription from './controller/provider/subscriptionManager';
-import buildinProvider from 'background/utils/buildinProvider';
+import { getOriginFromUrl, transformFunctionsToZero } from '@/utils';
+import { appIsDev, getSentryEnv, isManifestV3 } from '@/utils/env';
+import { matomoRequestEvent } from '@/utils/matomo-request';
+import { Message, sendReadyMessageToTabs } from '@/utils/message';
+import Safe from '@rabby-wallet/gnosis-sdk';
+import * as Sentry from '@sentry/browser';
+import fetchAdapter from 'background/utils/fetchAdapter';
+import { WalletController } from 'background/controller/wallet';
+import {
+  APPCHAIN_SYNC_SCENE,
+  BALANCE_SYNC_SCENE,
+  CACHE_VALID_DURATION,
+  DEFI_SYNC_SCENE,
+  TOKEN_SYNC_SCENE,
+} from '@/db/constants';
+import { syncDbService } from '@/db/services/syncDbService';
+import {
+  EVENTS,
+  EVENTS_IN_BG,
+  INTERNAL_REQUEST_ORIGIN,
+  IS_FIREFOX,
+  KEYRING_CATEGORY_MAP,
+  KEYRING_TYPE,
+} from 'consts';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
-import { setPopupIcon, wait } from './utils';
-import { getSentryEnv } from '@/utils/env';
-import { matomoRequestEvent } from '@/utils/matomo-request';
+import { ethErrors } from 'eth-rpc-errors';
+import { groupBy, isNull, omit, pick } from 'lodash';
+import 'reflect-metadata';
+import browser from 'webextension-polyfill';
+import BigNumber from 'bignumber.js';
+import { providerController, walletController } from './controller';
+import createSubscription from './controller/provider/subscriptionManager';
+import {
+  bridgeService,
+  contactBookService,
+  currencyService,
+  gasAccountService,
+  HDKeyRingLastAddAddrTimeService,
+  keyringService,
+  openapiService,
+  pageStateCacheService,
+  permissionService,
+  preferenceService,
+  RabbyPointsService,
+  RPCService,
+  securityEngineService,
+  sessionService,
+  signTextHistoryService,
+  swapService,
+  transactionBroadcastWatchService,
+  transactionHistoryService,
+  transactionWatchService,
+  uninstalledService,
+  whitelistService,
+  OfflineChainsService,
+  perpsService,
+  transactionsService,
+  innerDappFrameService,
+} from './service';
+import { customTestnetService } from './service/customTestnet';
+import { GasAccountServiceStore } from './service/gasAccount';
 import { testnetOpenapiService } from './service/openapi';
+import { syncChainService } from './service/syncChain';
+import { userGuideService } from './service/userGuide';
+import lendingService from './service/lending';
+import rpcCache from './utils/rpcCache';
+import { storage } from './webapi';
+import { metamaskModeService } from './service/metamaskModeService';
+import { ga4 } from '@/utils/ga4';
+import { ALARMS_SYNC_DEFAULT_RPC, ALARMS_USER_ENABLE } from './utils/alarms';
+import { subscribeTxCompleted } from './subscriptions/rateGuidance';
+
+BigNumber.config({ EXPONENTIAL_AT: [-20, 100] });
+
+Safe.adapter = fetchAdapter as any;
+Safe.openapiService = openapiService;
 
 dayjs.extend(utc);
-
-setPopupIcon('default');
 
 const { PortMessage } = Message;
 
@@ -49,33 +86,26 @@ let appStoreLoaded = false;
 
 Sentry.init({
   dsn:
-    'https://e871ee64a51b4e8c91ea5fa50b67be6b@o460488.ingest.sentry.io/5831390',
+    'https://f4a992c621c55f48350156a32da4778d@o4507018303438848.ingest.us.sentry.io/4507018389749760',
   release: process.env.release,
   environment: getSentryEnv(),
   ignoreErrors: [
     'Transport error: {"event":"transport_error","params":["Websocket connection failed"]}',
     'Failed to fetch',
     'TransportOpenUserCancelled',
+    'Non-Error promise rejection captured with keys: message, stack',
+    'Non-Error promise rejection captured with keys: message',
+    /Non-Error promise rejection captured with keys/,
+    /\[From .*\]/, // error from custom rpc
+    /AxiosError/,
+    /WebSocket connection failed/,
+    /Could not establish connection/,
+    /HttpRequestError/,
   ],
 });
 
-function initAppMeta() {
-  const head = document.querySelector('head');
-  const icon = document.createElement('link');
-  icon.href = 'https://rabby.io/assets/images/logo-128.png';
-  icon.rel = 'icon';
-  head?.appendChild(icon);
-  const name = document.createElement('meta');
-  name.name = 'name';
-  name.content = 'Rabby';
-  head?.appendChild(name);
-  const description = document.createElement('meta');
-  description.name = 'description';
-  description.content = i18n.t('appDescription');
-  head?.appendChild(description);
-}
-
 async function restoreAppState() {
+  await onInstall();
   const keyringState = await storage.get('keyringState');
   keyringService.loadStore(keyringState);
   keyringService.store.subscribe((value) => storage.set('keyringState', value));
@@ -85,9 +115,12 @@ async function restoreAppState() {
   // Init keyring and openapi first since this two service will not be migrated
   await migrateData();
 
+  await customTestnetService.init();
   await permissionService.init();
   await preferenceService.init();
+  await currencyService.init();
   await transactionWatchService.init();
+  await transactionBroadcastWatchService.init();
   await pageStateCacheService.init();
   await transactionHistoryService.init();
   await contactBookService.init();
@@ -96,20 +129,107 @@ async function restoreAppState() {
   await swapService.init();
   await RPCService.init();
   await securityEngineService.init();
+  await RabbyPointsService.init();
+  await HDKeyRingLastAddAddrTimeService.init();
+  await bridgeService.init();
+  await gasAccountService.init();
+  await uninstalledService.init();
+  await metamaskModeService.init();
+  await OfflineChainsService.init();
+  await syncChainService.init();
+  await perpsService.init();
+  await transactionsService.init();
+  await lendingService.init();
+  await innerDappFrameService.init();
+
+  await walletController.tryUnlock();
 
   rpcCache.start();
 
   appStoreLoaded = true;
 
+  syncChainService.roll();
   transactionWatchService.roll();
-  initAppMeta();
-  startEnableUser();
+  transactionBroadcastWatchService.roll();
+  walletController.syncMainnetChainList();
+
+  // check if user has enabled the extension
+  if (isManifestV3) {
+    browser.alarms.create(ALARMS_USER_ENABLE, {
+      when: Date.now(),
+      periodInMinutes: 60,
+    });
+    browser.alarms.create(ALARMS_SYNC_DEFAULT_RPC, {
+      when: Date.now(),
+      periodInMinutes: 60,
+    });
+  } else {
+    setInterval(() => {
+      startEnableUser();
+      RPCService.syncDefaultRPC();
+    }, 1 * 60 * 60 * 1000);
+  }
+
+  if (!keyringService.isBooted()) {
+    userGuideService.init();
+  }
+
+  eventBus.addEventListener(EVENTS_IN_BG.ON_TX_COMPLETED, ({ address }) => {
+    if (!address) return;
+
+    walletController.forceExpireInMemoryAddressBalance(address);
+    walletController.forceExpireInMemoryNetCurve(address);
+    syncDbService.setUpdatedAtIfExists({
+      address,
+      scene: TOKEN_SYNC_SCENE,
+      updatedAt: Date.now() - CACHE_VALID_DURATION,
+    });
+    syncDbService.setUpdatedAtIfExists({
+      address,
+      scene: DEFI_SYNC_SCENE,
+      updatedAt: Date.now() - CACHE_VALID_DURATION,
+    });
+    syncDbService.setUpdatedAtIfExists({
+      address,
+      scene: APPCHAIN_SYNC_SCENE,
+      updatedAt: Date.now() - CACHE_VALID_DURATION,
+    });
+    syncDbService.setUpdatedAtIfExists({
+      address,
+      scene: BALANCE_SYNC_SCENE,
+      updatedAt: Date.now() - CACHE_VALID_DURATION,
+    });
+  });
+
+  if (appIsDev) {
+    globalThis._forceExpireBalanceAboutData = (address: string) => {
+      eventBus.emit(EVENTS_IN_BG.ON_TX_COMPLETED, { address });
+    };
+  }
+  await sendReadyMessageToTabs();
+  subscribeTxCompleted({ preferenceService });
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'getBackgroundReady') {
+      sendResponse({
+        data: {
+          ready: true,
+        },
+      });
+    }
+  });
+
+  uninstalledService.setUninstalled();
 }
 
 restoreAppState();
 {
   let interval: NodeJS.Timeout | null;
   keyringService.on('unlock', () => {
+    walletController.syncMainnetChainList();
+    contactBookService.detectWhiteListCex();
+    perpsService.unlockAgentWallets();
+
     if (interval) {
       clearInterval(interval);
     }
@@ -118,6 +238,18 @@ restoreAppState();
       if (dayjs(time).utc().isSame(dayjs().utc(), 'day')) {
         return;
       }
+      const customTestnetLength = customTestnetService.getList()?.length;
+      if (customTestnetLength) {
+        matomoRequestEvent({
+          category: 'Custom Network',
+          action: 'Custom Network Status',
+          value: customTestnetLength,
+        });
+
+        ga4.fireEvent('Has_CustomNetwork', {
+          event_category: 'Custom Network',
+        });
+      }
       const chains = preferenceService.getSavedChains();
       matomoRequestEvent({
         category: 'User',
@@ -125,18 +257,21 @@ restoreAppState();
         label: chains.join(','),
       });
       const accounts = await walletController.getAccounts();
-      const list = accounts.map((account) => {
-        const category = KEYRING_CATEGORY_MAP[account.type];
-        const action = account.brandName;
-        const label =
-          (walletController.getAddressCacheBalance(account.address)
-            ?.total_usd_value || 0) <= 0;
-        return {
-          category,
-          action,
-          label: label ? 'empty' : 'notEmpty',
-        };
-      });
+      const list = await Promise.all(
+        accounts.map(async (account) => {
+          const category = KEYRING_CATEGORY_MAP[account.type];
+          const action = account.brandName;
+          const balance = await walletController.getAddressCacheBalance(
+            account.address
+          );
+          const label = (balance?.total_usd_value || 0) <= 0;
+          return {
+            category,
+            action,
+            label: label ? 'empty' : 'notEmpty',
+          };
+        })
+      );
       const groups = groupBy(list, (item) => {
         return `${item.category}_${item.action}_${item.label}`;
       });
@@ -147,23 +282,15 @@ restoreAppState();
           label: [group[0].action, group[0].label, group.length].join('|'),
           value: group.length,
         });
+
+        ga4.fireEvent(`${group[0].category}_${group[0].label}`, {
+          event_category: 'UserAddress',
+        });
       });
       preferenceService.updateSendLogTime(Date.now());
     };
     sendEvent();
     interval = setInterval(sendEvent, 5 * 60 * 1000);
-    // TODO: remove me after 2022.12.31
-    const arrangeOldContactAndAlias = async () => {
-      const addresses = await keyringService.getAllAdresses();
-      const contactMap = contactBookService.getContactsByMap();
-      addresses.forEach(({ address }) => {
-        const item = contactMap[address];
-        if (item && item.isContact && !item.isAlias) {
-          contactBookService.addAlias({ name: item.name, address });
-        }
-      });
-    };
-    arrangeOldContactAndAlias();
   });
 
   keyringService.on('lock', () => {
@@ -172,14 +299,46 @@ restoreAppState();
       interval = null;
     }
   });
+
+  keyringService.on(
+    'removedAccount',
+    async (address: string, type: string, brand?: string) => {
+      await logoutGasAccountOnAddressRemoved(address, type, brand);
+      if (type !== KEYRING_TYPE.WatchAddressKeyring) {
+        const perpsAccount = await perpsService.getCurrentAccount();
+        if (perpsAccount?.address === address && perpsAccount.type === type) {
+          eventBus.emit(EVENTS.broadcastToUI, {
+            method: EVENTS.PERPS.LOG_OUT,
+          });
+          perpsService.setCurrentAccount(null);
+        }
+      }
+    }
+  );
 }
+
+keyringService.on('resetPassword', async () => {
+  preferenceService.clearBiometricUnlockStorage();
+  const gasAccount = gasAccountService.getGasAccountData() as GasAccountServiceStore;
+
+  if (
+    gasAccount?.account?.type === KEYRING_TYPE.SimpleKeyring ||
+    gasAccount?.account?.type === KEYRING_TYPE.HdKeyring
+  ) {
+    gasAccountService.setGasAccountSig();
+    eventBus.emit(EVENTS.broadcastToUI, {
+      method: EVENTS.GAS_ACCOUNT.LOG_OUT,
+    });
+  }
+});
 
 // for page provider
 browser.runtime.onConnect.addListener((port) => {
   if (
     port.name === 'popup' ||
     port.name === 'notification' ||
-    port.name === 'tab'
+    port.name === 'tab' ||
+    port.name === 'desktop'
   ) {
     const pm = new PortMessage(port);
     pm.listen((data) => {
@@ -204,10 +363,36 @@ browser.runtime.onConnect.addListener((port) => {
               );
             }
             break;
+          case 'fakeTestnetOpenapi':
+            if (walletController.fakeTestnetOpenapi[data.method]) {
+              return walletController.fakeTestnetOpenapi[data.method].apply(
+                null,
+                data.params
+              );
+            }
+            break;
           case 'controller':
           default:
             if (data.method) {
-              return walletController[data.method].apply(null, data.params);
+              const res = walletController[data.method].apply(
+                null,
+                data.params
+              );
+              if (!IS_FIREFOX) {
+                return res;
+              }
+              if (typeof res?.then === 'function') {
+                return res.then((x) => {
+                  if (typeof x !== 'object' || isNull(x)) {
+                    return x;
+                  }
+                  return transformFunctionsToZero(x);
+                });
+              }
+              if (typeof res !== 'object' || isNull(res)) {
+                return res;
+              }
+              return transformFunctionsToZero(res);
             }
         }
       }
@@ -231,8 +416,14 @@ browser.runtime.onConnect.addListener((port) => {
       });
     }
 
+    browser.runtime.sendMessage({
+      type: 'pageOpened',
+    });
     eventBus.addEventListener(EVENTS.broadcastToUI, boardcastCallback);
     port.onDisconnect.addListener(() => {
+      browser.runtime.sendMessage({
+        type: 'pageClosed',
+      });
       eventBus.removeEventListener(EVENTS.broadcastToUI, boardcastCallback);
     });
 
@@ -244,8 +435,7 @@ browser.runtime.onConnect.addListener((port) => {
   }
 
   const pm = new PortMessage(port);
-  const provider = buildinProvider.currentProvider;
-  const subscriptionManager = createSubscription(provider);
+  const subscriptionManager = createSubscription(origin);
 
   subscriptionManager.events.on('notification', (message) => {
     pm.send('message', {
@@ -261,7 +451,7 @@ browser.runtime.onConnect.addListener((port) => {
     });
   });
 
-  pm.listen(async (data) => {
+  pm.listen(async (_data) => {
     if (!appStoreLoaded) {
       throw ethErrors.provider.disconnected();
     }
@@ -272,16 +462,43 @@ browser.runtime.onConnect.addListener((port) => {
     }
     const origin = getOriginFromUrl(port.sender.url);
     const session = sessionService.getOrCreateSession(sessionId, origin);
-    const req = { data, session, origin };
+
+    let data = _data;
+    if (origin !== INTERNAL_REQUEST_ORIGIN) {
+      if (data?.$ctx?.providers?.length) {
+        data.$ctx = pick(data.$ctx, 'providers');
+      } else {
+        data = omit(data, '$ctx');
+      }
+    }
+
+    const req = {
+      data,
+      session,
+      origin,
+      isFromDesktopDapp:
+        port.sender.id === browser.runtime.id &&
+        port.sender?.tab?.url?.startsWith(
+          `${browser.runtime.getURL('')}desktop.html#/desktop/`
+        ),
+    };
+    if (!session?.origin) {
+      const tabInfo = await browser.tabs.get(sessionId);
+      // prevent tabCheckin not triggered, re-fetch tab info when session have no info at all
+      session?.setProp({
+        origin,
+        name: tabInfo.title || '',
+        icon: tabInfo.favIconUrl || '',
+        isFromDesktopDapp: req.isFromDesktopDapp,
+      });
+    }
     // for background push to respective page
     req.session!.setPortMessage(pm);
 
-    if (subscriptionManager.methods[data?.method]) {
-      const connectSite = permissionService.getConnectedSite(session!.origin);
-      if (connectSite) {
-        const chain = CHAINS[connectSite.chain];
-        provider.chainId = chain.network;
-      }
+    if (
+      subscriptionManager.methods[data?.method] &&
+      permissionService.getConnectedSite(session!.origin)?.isConnected
+    ) {
       return subscriptionManager.methods[data.method].call(null, req);
     }
 
@@ -308,5 +525,43 @@ function startEnableUser() {
     category: 'User',
     action: 'enable',
   });
+
+  browser.action.getUserSettings().then((res) => {
+    ga4.fireEvent(`User_Enable_${res.isOnToolbar ? 'Pin' : 'unPin'}`, {
+      event_category: 'User Enable',
+    });
+  });
   preferenceService.updateSendEnableTime(Date.now());
 }
+
+// On first install, open a new tab with Rabby
+async function onInstall() {
+  const storeAlreadyExisted = await userGuideService.isStorageExisted();
+  // If the store doesn't exist, then this is the first time running this script,
+  // and is therefore an install
+  if (!storeAlreadyExisted) {
+    await userGuideService.openUserGuide();
+  }
+}
+
+if (isManifestV3) {
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === ALARMS_USER_ENABLE) {
+      startEnableUser();
+    }
+    if (alarm.name === ALARMS_SYNC_DEFAULT_RPC) {
+      RPCService.syncDefaultRPC();
+    }
+  });
+}
+
+export const logoutGasAccountOnAddressRemoved = async (
+  address: string,
+  type: string,
+  brand?: string
+) => {
+  if (type === KEYRING_TYPE.WatchAddressKeyring) {
+    return;
+  }
+  gasAccountService.handleRemovedAccount(address, type, brand);
+};

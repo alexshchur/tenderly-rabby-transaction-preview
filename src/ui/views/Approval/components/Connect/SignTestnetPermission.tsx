@@ -5,12 +5,16 @@ import IconArrowdown from '@/ui/assets/arrow-down.svg';
 import { Popup } from '@/ui/component';
 import { Radio } from 'antd';
 import { SIGN_PERMISSION_OPTIONS, SIGN_PERMISSION_TYPES } from '@/constant';
+import { useTranslation } from 'react-i18next';
 
 const Container = styled.div`
   display: flex;
   align-items: center;
   box-shadow: 0px -8px 24px 0px rgba(0, 0, 0, 0.1);
+  background: var(--r-neutral-card-1, #fff);
   padding: 11px 20px;
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
 `;
 
 const SelectPopup = styled(Popup)`
@@ -31,11 +35,11 @@ const SelectPopup = styled(Popup)`
     display: flex;
     flex-direction: column;
     border-radius: 6px;
-    background-color: #f2f4f7;
+    background-color: var(--r-neutral-card2);
 
     .option {
       display: flex;
-      color: #192945;
+      color: var(--r-neutral-title1);
       font-size: 15px;
       line-height: 18px;
       font-weight: 500;
@@ -52,7 +56,7 @@ const SelectPopup = styled(Popup)`
         bottom: 0;
         height: 1px;
         height: 0.5px;
-        background-color: #d3d8e0;
+        background-color: var(--r-neutral-line);
       }
     }
   }
@@ -73,9 +77,15 @@ export const SignTestnetPermission = ({
   const value = _value || SIGN_PERMISSION_TYPES.MAINNET_AND_TESTNET;
 
   const [isShowPopup, setIsShowPopup] = React.useState(false);
-
+  const { t } = useTranslation();
+  const options = SIGN_PERMISSION_OPTIONS.map((item) => {
+    return {
+      ...item,
+      label: t(`constant.SIGN_PERMISSION_OPTIONS.${item.value}` as const),
+    };
+  });
   const label = React.useMemo(() => {
-    return SIGN_PERMISSION_OPTIONS.find((item) => item.value === value)?.label;
+    return options.find((item) => item.value === value)?.label;
   }, [value]);
 
   if (!isShowTestnet) {
@@ -85,11 +95,11 @@ export const SignTestnetPermission = ({
   return (
     <>
       <Container>
-        <div className="text-13 text-[#3E495E] leading-[18px]">
-          Signing permission
+        <div className="text-13 text-r-neutral-body leading-[18px]">
+          {t('page.connect.SignTestnetPermission.title')}
         </div>
         <div
-          className="flex items-center ml-auto gap-[2px] font-medium text-15 leading-[18px] text-gray-title cursor-pointer"
+          className="flex items-center ml-auto gap-[2px] font-medium text-15 leading-[18px] text-r-neutral-title1 cursor-pointer"
           onClick={() => {
             setIsShowPopup(true);
           }}
@@ -99,13 +109,14 @@ export const SignTestnetPermission = ({
         </div>
       </Container>
       <SelectPopup
-        title="Signing Permission"
+        title={t('page.connect.SignTestnetPermission.title')}
         visible={isShowPopup}
         onCancel={() => {
           setIsShowPopup(false);
         }}
         closable={true}
         height={208}
+        isSupportDarkMode
       >
         <Radio.Group
           value={value}
@@ -115,7 +126,7 @@ export const SignTestnetPermission = ({
           }}
         >
           <div className="options">
-            {SIGN_PERMISSION_OPTIONS.map((item) => {
+            {options.map((item) => {
               return (
                 <label className="option" key={item.value}>
                   <div>{item.label}</div>

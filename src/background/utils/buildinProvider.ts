@@ -4,13 +4,9 @@ import providerController from '../controller/provider/controller';
 import preferenceService from 'background/service/preference';
 import notificationService from 'background/service/notification';
 import wallet from '../controller/wallet';
-import {
-  CHAINS,
-  INTERNAL_REQUEST_SESSION,
-  KEYRING_CLASS,
-  CHAINS_ENUM,
-} from 'consts';
+import { CHAINS, INTERNAL_REQUEST_SESSION, CHAINS_ENUM } from 'consts';
 import { underline2Camelcase } from 'background/utils';
+import { findChain } from '@/utils/chain';
 
 interface StateProvider {
   accounts: string[] | null;
@@ -80,12 +76,14 @@ export class EthereumProvider extends EventEmitter {
       session: INTERNAL_REQUEST_SESSION,
     };
     const mapMethod = underline2Camelcase(method);
-    const currentAccount = preferenceService.getCurrentAccount()!;
     const networkId = this.chainId || CHAINS[CHAINS_ENUM.ETH].id.toString();
 
-    const chain = Object.values(CHAINS).find(
-      (item) => item.id.toString() === networkId
-    )!;
+    const chain = findChain({
+      networkId: networkId,
+    });
+    if (!chain) {
+      throw new Error('chain not found');
+    }
     if (!providerController[mapMethod]) {
       // TODO: make rpc whitelist
       if (method.startsWith('eth_') || method === 'net_version') {
@@ -111,23 +109,25 @@ export class EthereumProvider extends EventEmitter {
           ...data.params[0],
           chainId: Number(networkId),
         };
-        preferenceService.setCurrentAccount({
-          address: this.currentAccount,
-          type: this.currentAccountType,
-          brandName: this.currentAccountBrand,
-        });
         if (txParams.gas) {
           delete txParams.gas;
         }
-        return wallet
-          .sendRequest({
+        return wallet.sendRequest(
+          {
             $ctx: this.$ctx,
             method: 'eth_sendTransaction',
             params: [txParams],
-          })
-          .finally(() => {
-            preferenceService.setCurrentAccount(currentAccount);
-          });
+          },
+          {
+            account: this.currentAccount
+              ? {
+                  address: this.currentAccount,
+                  type: this.currentAccountType,
+                  brandName: this.currentAccountBrand,
+                }
+              : undefined,
+          }
+        );
       }
       case 'eth_chainId':
         return chain.hex;
@@ -209,7 +209,7 @@ export class EthereumProvider extends EventEmitter {
 
 const provider = new EthereumProvider();
 
-window.dispatchEvent(new Event('ethereum#initialized'));
+// window.dispatchEvent(new Event('ethereum#initialized'));
 
 export default {
   currentProvider: new Proxy(provider, {

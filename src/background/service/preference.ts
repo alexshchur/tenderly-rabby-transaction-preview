@@ -1,4 +1,6 @@
 import cloneDeep from 'lodash/cloneDeep';
+import * as Sentry from '@sentry/browser';
+import type { BalanceCacheData } from '@/db/schema/balance';
 import eventBus from '@/eventBus';
 import { createPersistStore, isSameAddress } from 'background/utils';
 import {
@@ -8,9 +10,20 @@ import {
   permissionService,
 } from './index';
 import { TotalBalanceResponse, TokenItem } from './openapi';
-import { HARDWARE_KEYRING_TYPES, EVENTS, CHAINS_ENUM } from 'consts';
-import { browser } from 'webextension-polyfill-ts';
+import { EVENTS, CHAINS_ENUM, LANGS, DARK_MODE_TYPE } from 'consts';
+import browser from 'webextension-polyfill';
 import semver from 'semver-compare';
+import { syncStateToUI } from '../utils/broadcastToUI';
+import { BROADCAST_TO_UI_EVENTS } from '@/utils/broadcastToUI';
+import dayjs from 'dayjs';
+import type { IExtractFromPromise } from '@/ui/utils/type';
+import { OpenApiService } from '@rabby-wallet/rabby-api';
+import { getFirstPreferredLangCode } from './i18n';
+import {
+  getDefaultRateGuideLastExposure,
+  LAST_EXPOSURE_VERSIONED_KEY,
+  RateGuideLastExposure,
+} from '@/utils/rateGuidance';
 
 const version = process.env.release || '0';
 
@@ -26,6 +39,7 @@ export interface Account {
 
 export interface ChainGas {
   gasPrice?: number | null; // custom cached gas price
+  maxPriorityFee?: number | null; // custom cached maxPriorityFee for 1559 tx
   gasLevel?: string | null; // cached gasLevel
   lastTimeSelect?: 'gasLevel' | 'gasPrice'; // last time selection, 'gasLevel' | 'gasPrice'
   expireAt?: number;
@@ -48,27 +62,52 @@ export type IHighlightedAddress = {
   brandName: Account['brandName'];
   address: Account['address'];
 };
+export type CurvePointCollection = IExtractFromPromise<
+  ReturnType<OpenApiService['getNetCurve']>
+>;
+
 export interface PreferenceStore {
   currentAccount: Account | undefined | null;
   externalLinkAck: boolean;
   hiddenAddresses: Account[];
   balanceMap: {
-    [address: string]: TotalBalanceResponse;
+    [address: string]: BalanceCacheData;
+  };
+  curvePointsMap: {
+    [address: string]: CurvePointCollection;
   };
   testnetBalanceMap: {
     [address: string]: TotalBalanceResponse;
   };
+  /**
+   * @why only mainnet assets would be calculated in Dashboard, we don't need curvePointsMap for testnet
+   */
+  // testnetCurveDataMap: {
+  //   [address: string]: {
+  //     curveData: CurvePointCollection;
+  //   };
+  // };
+  /**
+   * @deprecated
+   */
   useLedgerLive: boolean;
   locale: string;
   watchAddressPreference: Record<string, number>;
   isDefaultWallet: boolean;
+  /**
+   * @deprecated
+   */
   lastTimeSendToken: Record<string, TokenItem>;
+  lastTimeUsedToken: {
+    [P in 'send']?: TokenItem;
+  };
   highligtedAddresses: IHighlightedAddress[];
   walletSavedList: any[];
   alianNames?: Record<string, string>;
   initAlianNames: boolean;
   gasCache: GasCache;
   currentVersion: string;
+  prevVersion?: string;
   firstOpen: boolean;
   pinnedChain: string[];
   /**
@@ -82,6 +121,7 @@ export interface PreferenceStore {
   lastSelectedSwapPayToken?: Record<string, TokenItem>;
   lastSelectedGasTopUpChain?: Record<string, CHAINS_ENUM>;
   sendEnableTime?: number;
+  ga4EventTime?: number;
   customizedToken?: Token[];
   blockedToken?: Token[];
   collectionStarred?: Token[];
@@ -91,17 +131,72 @@ export interface PreferenceStore {
   autoLockTime?: number;
   hiddenBalance?: boolean;
   isShowTestnet?: boolean;
+  themeMode?: DARK_MODE_TYPE;
+  addressSortStore: AddressSortStore;
+  safeSelfHostConfirm?: Record<string, boolean>;
+
+  /** @deprecated */
+  reserveGasOnSendToken?: boolean;
+  isHideEcologyNoticeDict?: Record<string | number, boolean>;
+
+  isEnabledPwdForNonWhitelistedTx?: boolean;
+  isEnabledDappAccount?: boolean;
+  biometricUnlockEnabled?: boolean;
+  biometricUnlockCredentialId?: string;
+  biometricUnlockEncryptedPassword?: string;
+  biometricUnlockIv?: string;
+  unlockPreferredMethod?: UnlockPreferredMethod;
+
+  rateGuideLastExposure?: RateGuideLastExposure;
+
+  /** @deprecated use desktopTabIds instead */
+  desktopTabId?: number;
+
+  desktopTabIds?: {
+    profile?: number;
+    perps?: number;
+    lending?: number;
+    prediction?: number;
+  };
+
+  dashboardPanelOrder?: string[];
+
+  /** @deprecated */
+  desktopTokensAllMode?: boolean;
+
+  sceneAccountMap?: Record<string, Account | null>;
 }
 
-const SUPPORT_LOCALES = ['en'];
+export interface AddressSortStore {
+  search: string;
+  sortType: 'usd' | 'addressType' | 'alphabet';
+  lastScrollOffset?: number;
+  lastCurrentRecordTime?: number;
+}
+
+const defaultAddressSortStore: AddressSortStore = {
+  search: '',
+  sortType: 'usd',
+};
+
+export type PreferenceServiceCls = PreferenceService;
+export type UnlockPreferredMethod = 'password' | 'biometric';
 
 class PreferenceService {
   store!: PreferenceStore;
   popupOpen = false;
   hasOtherProvider = false;
+  currentCoboSafeAddress?: Account | null;
 
   init = async () => {
-    const defaultLang = 'en';
+    let defaultLang = 'en';
+    try {
+      defaultLang = await getFirstPreferredLangCode();
+    } catch (e) {
+      Sentry.captureException(
+        `i18n getFirstPreferredLangCode error: ${JSON.stringify(e)}`
+      );
+    }
     this.store = await createPersistStore<PreferenceStore>({
       name: 'preference',
       template: {
@@ -109,18 +204,21 @@ class PreferenceService {
         externalLinkAck: false,
         hiddenAddresses: [],
         balanceMap: {},
+        curvePointsMap: {},
         testnetBalanceMap: {},
         useLedgerLive: false,
         locale: defaultLang,
         watchAddressPreference: {},
         isDefaultWallet: false,
         lastTimeSendToken: {},
+        lastTimeUsedToken: {},
         highligtedAddresses: [],
         walletSavedList: [],
         alianNames: {},
         initAlianNames: false,
         gasCache: {},
         currentVersion: '0',
+        prevVersion: '0',
         firstOpen: false,
         pinnedChain: [],
         addedToken: {},
@@ -134,9 +232,34 @@ class PreferenceService {
         collectionStarred: [],
         hiddenBalance: false,
         isShowTestnet: false,
+        themeMode: DARK_MODE_TYPE.light,
+        addressSortStore: {
+          ...defaultAddressSortStore,
+        },
+        reserveGasOnSendToken: true,
+        isHideEcologyNoticeDict: {},
+        safeSelfHostConfirm: {},
+        isEnabledPwdForNonWhitelistedTx: false,
+        isEnabledDappAccount: false,
+        biometricUnlockEnabled: false,
+        biometricUnlockCredentialId: '',
+        biometricUnlockEncryptedPassword: '',
+        biometricUnlockIv: '',
+        unlockPreferredMethod: 'biometric',
+        ga4EventTime: 0,
+        rateGuideLastExposure: getDefaultRateGuideLastExposure(),
+        desktopTabId: undefined,
+        desktopTabIds: {},
+        desktopTokensAllMode: false,
+        dashboardPanelOrder: [],
+        sceneAccountMap: {},
       },
     });
-    if (!this.store.locale || this.store.locale !== defaultLang) {
+
+    if (
+      !this.store.locale ||
+      !LANGS.find((item) => item.code === this.store.locale)
+    ) {
       this.store.locale = defaultLang;
     }
     i18n.changeLanguage(this.store.locale);
@@ -149,13 +272,16 @@ class PreferenceService {
     if (!this.store.lastTimeSendToken) {
       this.store.lastTimeSendToken = {};
     }
+    if (!this.store.lastTimeUsedToken) {
+      this.store.lastTimeUsedToken = {};
+    }
     if (!this.store.initAlianNames) {
       this.store.initAlianNames = false;
     }
     if (!this.store.gasCache) {
       this.store.gasCache = {};
     }
-    if (!this.store.pinnedChain) {
+    if (!this.store.pinnedChain || !Array.isArray(this.store.pinnedChain)) {
       this.store.pinnedChain = [];
     }
     if (!this.store.addedToken) {
@@ -172,9 +298,6 @@ class PreferenceService {
     }
     if (!this.store.testnetBalanceMap) {
       this.store.testnetBalanceMap = {};
-    }
-    if (!this.store.useLedgerLive) {
-      this.store.useLedgerLive = false;
     }
     if (!this.store.highligtedAddresses) {
       this.store.highligtedAddresses = [];
@@ -215,10 +338,106 @@ class PreferenceService {
     if (!this.store.isShowTestnet) {
       this.store.isShowTestnet = false;
     }
+    if (!this.store.addressSortStore) {
+      this.store.addressSortStore = {
+        ...defaultAddressSortStore,
+      };
+    }
+    if (!this.store.isHideEcologyNoticeDict) {
+      this.store.isHideEcologyNoticeDict = {};
+    }
+    if (!this.store.safeSelfHostConfirm) {
+      this.store.safeSelfHostConfirm = {};
+    }
+    if (this.store.biometricUnlockEnabled == null) {
+      this.store.biometricUnlockEnabled = false;
+    }
+    if (!this.store.biometricUnlockCredentialId) {
+      this.store.biometricUnlockCredentialId = '';
+    }
+    if (!this.store.biometricUnlockEncryptedPassword) {
+      this.store.biometricUnlockEncryptedPassword = '';
+    }
+    if (!this.store.biometricUnlockIv) {
+      this.store.biometricUnlockIv = '';
+    }
+    if (!this.store.unlockPreferredMethod) {
+      this.store.unlockPreferredMethod = 'biometric';
+    }
+    if ((this.store as any).biometricUnlockPrfSalt) {
+      this.clearBiometricUnlockStorage();
+      (this.store as any).biometricUnlockPrfSalt = '';
+    }
+    if (
+      !this.store.currentVersion ||
+      semver(version, this.store.currentVersion) > 0
+    ) {
+      this.store.firstOpen = true;
+    }
+
+    if (this.store.currentVersion !== version) {
+      this.store.prevVersion = this.store.currentVersion;
+    }
+
+    this.store.currentVersion = version;
+
+    if (this.store.ga4EventTime) {
+      this.store.ga4EventTime = 0;
+    }
+    if (!this.store.sceneAccountMap) {
+      this.store.sceneAccountMap = {};
+    }
+  };
+
+  hasConfirmSafeSelfHost = (networkId: string) => {
+    if (this.store.safeSelfHostConfirm?.[networkId]) {
+      return true;
+    }
+    return false;
+  };
+
+  setConfirmSafeSelfHost = (networkId: string) => {
+    if (!this.store.safeSelfHostConfirm) {
+      this.store.safeSelfHostConfirm = {
+        [networkId]: true,
+      };
+    } else {
+      this.store.safeSelfHostConfirm[networkId] = true;
+    }
   };
 
   getPreference = (key?: string) => {
-    return key ? this.store[key] : this.store;
+    if (!key || ['search', 'lastCurrent'].includes(key)) {
+      this.resetAddressSortStoreExpiredValue();
+    }
+    if (key === 'isShowTestnet') {
+      return true;
+    }
+    return key ? this.store[key] : { ...this.store, isShowTestnet: true };
+  };
+
+  setPreferencePartials = (data: Partial<PreferenceStore>) => {
+    Object.keys(data).forEach((k) => {
+      if (k in this.store) {
+        this.store[k] = data[k];
+      } else {
+        const err = `Preference key ${k} not found`;
+        if (process.env.DEBUG) {
+          throw new Error(err);
+        } else {
+          console.error(err);
+        }
+      }
+    });
+  };
+
+  clearBiometricUnlockStorage = () => {
+    this.setPreferencePartials({
+      biometricUnlockEnabled: false,
+      biometricUnlockCredentialId: '',
+      biometricUnlockEncryptedPassword: '',
+      biometricUnlockIv: '',
+    });
   };
 
   getTokenApprovalChain = (address: string) => {
@@ -247,41 +466,43 @@ class PreferenceService {
     };
   };
 
-  getLastTimeSendToken = (address: string) => {
-    const key = address.toLowerCase();
-    return this.store.lastTimeSendToken[key];
+  getLastTimeSendToken = () => {
+    // const key = address.toLowerCase();
+    return this.store.lastTimeUsedToken['send'];
   };
 
-  setLastTimeSendToken = (address: string, token: TokenItem) => {
-    const key = address.toLowerCase();
-    this.store.lastTimeSendToken = {
-      ...this.store.lastTimeSendToken,
-      [key]: token,
+  setLastTimeSendToken = (token: TokenItem) => {
+    if (Object.values(this.store.lastTimeSendToken).length) {
+      this.store.lastTimeSendToken = {};
+    }
+    this.store.lastTimeUsedToken = {
+      ...this.store.lastTimeUsedToken,
+      ['send']: token,
     };
   };
 
   getLastSelectedSwapPayToken = (address: string) => {
     const key = address.toLowerCase();
-    return this.store?.lastSelectedSwapPayToken?.[key];
+    return this.store.lastSelectedSwapPayToken?.[key];
   };
 
   setLastSelectedSwapPayToken = (address: string, token: TokenItem) => {
     const key = address.toLowerCase();
     this.store.lastSelectedSwapPayToken = {
-      ...this.store?.lastSelectedSwapPayToken,
+      ...this.store.lastSelectedSwapPayToken,
       [key]: token,
     };
   };
 
   getLastSelectedGasTopUpChain = (address: string) => {
     const key = address.toLowerCase();
-    return this.store?.lastSelectedGasTopUpChain?.[key];
+    return this.store.lastSelectedGasTopUpChain?.[key];
   };
 
   setLastSelectedGasTopUpChain = (address: string, chain: CHAINS_ENUM) => {
     const key = address.toLowerCase();
     this.store.lastSelectedGasTopUpChain = {
-      ...this.store?.lastSelectedGasTopUpChain,
+      ...this.store.lastSelectedGasTopUpChain,
       [key]: chain,
     };
   };
@@ -315,7 +536,7 @@ class PreferenceService {
     if (!langs) langs = [];
     return langs
       .map((lang) => lang.replace(/-/g, '_'))
-      .filter((lang) => SUPPORT_LOCALES.includes(lang));
+      .filter((lang) => LANGS.find((item) => item.code === lang));
   };
 
   /**
@@ -372,13 +593,16 @@ class PreferenceService {
   setCurrentAccount = (account: Account | null) => {
     this.store.currentAccount = account;
     if (account) {
-      sessionService.broadcastEvent('accountsChanged', [
-        account.address.toLowerCase(),
-      ]);
-      eventBus.emit(EVENTS.broadcastToUI, {
-        method: 'accountsChanged',
-        params: account,
-      });
+      if (!this.store.isEnabledDappAccount) {
+        sessionService.broadcastEvent(
+          'accountsChanged',
+          [account.address.toLowerCase()],
+          undefined,
+          undefined,
+          false
+        );
+      }
+      syncStateToUI(BROADCAST_TO_UI_EVENTS.accountsChanged, account);
     }
   };
 
@@ -395,14 +619,6 @@ class PreferenceService {
     const testnetBalanceMap = this.store.testnetBalanceMap || {};
     this.store.testnetBalanceMap = {
       ...testnetBalanceMap,
-      [address.toLowerCase()]: data,
-    };
-  };
-
-  updateAddressBalance = (address: string, data: TotalBalanceResponse) => {
-    const balanceMap = this.store.balanceMap || {};
-    this.store.balanceMap = {
-      ...balanceMap,
       [address.toLowerCase()]: data,
     };
   };
@@ -425,15 +641,63 @@ class PreferenceService {
     }
   };
 
-  getAddressBalance = (address: string): TotalBalanceResponse | null => {
-    const balanceMap = this.store.balanceMap || {};
-    return balanceMap[address.toLowerCase()] || null;
+  updateBalanceAboutCache = (
+    address: string,
+    data: {
+      totalBalance?: BalanceCacheData;
+      curvePoints?: CurvePointCollection;
+    }
+  ) => {
+    const addr = address.toLowerCase();
+    if (data.totalBalance) {
+      const balanceMap = this.store.balanceMap || {};
+      this.store.balanceMap = {
+        ...balanceMap,
+        [addr]: data.totalBalance,
+      };
+    }
+
+    if (data.curvePoints) {
+      const curvePointsMap = this.store.curvePointsMap || {};
+      this.store.curvePointsMap = {
+        ...curvePointsMap,
+        [addr]: data.curvePoints,
+      };
+    }
   };
 
-  getTestnetAddressBalance = (address: string): TotalBalanceResponse | null => {
-    const balanceMap = this.store.testnetBalanceMap || {};
-    return balanceMap[address.toLowerCase()] || null;
+  getBalanceAboutCacheByAddress = (address: string) => {
+    const addr = address.toLowerCase();
+    const balanceMap = this.store.balanceMap || {};
+    const curvePointsMap = this.store.curvePointsMap || {};
+
+    return {
+      totalBalance: balanceMap[addr] || null,
+      curvePoints: curvePointsMap[addr] || null,
+    };
   };
+
+  getBalanceAboutCacheMap = () => {
+    return {
+      balanceMap: this.store.balanceMap || {},
+      curvePointsMap: this.store.curvePointsMap || {},
+    };
+  };
+
+  removeCurvePoints = (address: string) => {
+    const key = address.toLowerCase();
+    if (key in this.store.curvePointsMap) {
+      const map = this.store.curvePointsMap;
+      delete map[key];
+      this.store.curvePointsMap = map;
+    }
+  };
+
+  /** useless now, maybe useful in the future */
+  // getTestnetAddressBalance = (address: string): TotalBalanceResponse | null => {
+  //   const balanceMap = this.store.testnetBalanceMap || {};
+  //   return balanceMap[address.toLowerCase()] || null;
+  // };
 
   getExternalLinkAck = (): boolean => {
     return this.store.externalLinkAck;
@@ -452,21 +716,17 @@ class PreferenceService {
     i18n.changeLanguage(locale);
   };
 
-  updateUseLedgerLive = async (value: boolean) => {
-    this.store.useLedgerLive = value;
-    const keyrings = keyringService.getKeyringsByType(
-      HARDWARE_KEYRING_TYPES.Ledger.type
-    );
-    await Promise.all(
-      keyrings.map(async (keyring) => {
-        await keyring.updateTransportMethod(value);
-        keyring.restart();
-      })
-    );
+  getThemeMode = () => {
+    return this.store.themeMode;
   };
 
-  isUseLedgerLive = () => {
-    return this.store.useLedgerLive;
+  setThemeMode = (themeMode: DARK_MODE_TYPE) => {
+    this.store.themeMode = themeMode;
+  };
+
+  /** @deprecated */
+  isReserveGasOnSendToken = () => {
+    return this.store.reserveGasOnSendToken;
   };
 
   getHighlightedAddresses = () => {
@@ -503,20 +763,7 @@ class PreferenceService {
   };
   getLastTimeGasSelection = (chainId: keyof GasCache): ChainGas | null => {
     const cache = this.store.gasCache[chainId];
-    if (cache && cache.lastTimeSelect === 'gasPrice') {
-      if (Date.now() <= (cache.expireAt || 0)) {
-        return cache;
-      } else if (cache.gasLevel) {
-        return {
-          lastTimeSelect: 'gasLevel',
-          gasLevel: cache.gasLevel,
-        };
-      } else {
-        return null;
-      }
-    } else {
-      return cache;
-    }
+    return cache;
   };
 
   updateLastTimeGasSelection = (chainId: keyof GasCache, gas: ChainGas) => {
@@ -526,6 +773,7 @@ class PreferenceService {
         [chainId]: {
           ...this.store.gasCache[chainId],
           ...gas,
+          maxPriorityFee: gas.maxPriorityFee ?? null,
           expireAt: Date.now() + 3600000, // custom gasPrice will expire at 1h later
         },
       };
@@ -540,15 +788,13 @@ class PreferenceService {
     }
   };
   getIsFirstOpen = () => {
-    if (
-      !this.store.currentVersion ||
-      semver(version, this.store.currentVersion) > 0
-    ) {
-      this.store.currentVersion = version;
-      this.store.firstOpen = true;
-    }
     return this.store.firstOpen;
   };
+
+  getIsNewUser = () => {
+    return !this.store.prevVersion || this.store.prevVersion === '0';
+  };
+
   updateIsFirstOpen = () => {
     this.store.firstOpen = false;
   };
@@ -574,21 +820,21 @@ class PreferenceService {
     this.store.addedToken[key] = tokenList;
   };
   getCustomizedToken = () => {
-    return this.store.customizedToken || [];
+    // return this.store.customizedToken || [];
+    return [] as Token[];
+  };
+  hasCustomizedToken = (token: Token) => {
+    return !!this.store.customizedToken?.find(
+      (item) =>
+        isSameAddress(item.address, token.address) && item.chain === token.chain
+    );
   };
   addCustomizedToken = (token: Token) => {
-    if (
-      !this.store.customizedToken?.find(
-        (item) =>
-          isSameAddress(item.address, token.address) &&
-          item.chain === token.chain
-      )
-    ) {
-      this.store.customizedToken = [
-        ...(this.store.customizedToken || []),
-        token,
-      ];
+    if (this.hasCustomizedToken(token)) {
+      throw new Error('Token already added');
     }
+
+    this.store.customizedToken = [...(this.store.customizedToken || []), token];
   };
   removeCustomizedToken = (token: Token) => {
     this.store.customizedToken = this.store.customizedToken?.filter(
@@ -600,7 +846,8 @@ class PreferenceService {
     );
   };
   getBlockedToken = () => {
-    return this.store.blockedToken || [];
+    // return this.store.blockedToken || [];
+    return [] as Token[];
   };
   addBlockedToken = (token: Token) => {
     if (
@@ -678,10 +925,88 @@ class PreferenceService {
     this.store.hiddenBalance = value;
   };
   getIsShowTestnet = () => {
-    return this.store.isShowTestnet;
+    // return this.store.isShowTestnet;
+    return true;
   };
   setIsShowTestnet = (value: boolean) => {
     this.store.isShowTestnet = value;
+  };
+  setDesktopTokensAllMode = (value: boolean) => {
+    this.store.desktopTokensAllMode = value;
+  };
+  saveCurrentCoboSafeAddress = async () => {
+    this.currentCoboSafeAddress = await this.getCurrentAccount();
+  };
+  resetCurrentCoboSafeAddress = async () => {
+    this.setCurrentAccount(this.currentCoboSafeAddress ?? null);
+  };
+
+  resetAddressSortStoreExpiredValue = () => {
+    if (
+      !this.store.addressSortStore.lastCurrentRecordTime ||
+      (this.store.addressSortStore.lastCurrentRecordTime &&
+        dayjs().isAfter(
+          dayjs
+            .unix(this.store.addressSortStore.lastCurrentRecordTime)
+            .add(15, 'minute')
+        ))
+    ) {
+      this.store.addressSortStore = {
+        ...this.store.addressSortStore,
+        search: '',
+        lastScrollOffset: undefined,
+        lastCurrentRecordTime: undefined,
+      };
+    }
+  };
+
+  getAddressSortStoreValue = (key: keyof AddressSortStore) => {
+    if (['search', 'lastScrollOffset'].includes(key)) {
+      this.resetAddressSortStoreExpiredValue();
+    }
+    return this.store.addressSortStore[key];
+  };
+
+  setAddressSortStoreValue = <K extends keyof AddressSortStore>(
+    key: K,
+    value: AddressSortStore[K]
+  ) => {
+    if (['search', 'lastCurrent'].includes(key)) {
+      this.store.addressSortStore = {
+        ...this.store.addressSortStore,
+        lastCurrentRecordTime: dayjs().unix(),
+      };
+    }
+    this.store.addressSortStore = {
+      ...this.store.addressSortStore,
+      [key]: value,
+    };
+  };
+  setIsHideEcologyNoticeDict = (v: Record<string | number, boolean>) => {
+    this.store.isHideEcologyNoticeDict = v;
+  };
+
+  getRateGuideLastExposure = () => {
+    return (
+      this.store.rateGuideLastExposure || getDefaultRateGuideLastExposure()
+    );
+  };
+
+  setRateGuideLastExposure = (exposure: Partial<RateGuideLastExposure>) => {
+    this.store.rateGuideLastExposure = {
+      txCount: 0,
+      ...this.store.rateGuideLastExposure,
+      ...exposure,
+      [LAST_EXPOSURE_VERSIONED_KEY]: {
+        time: -1,
+        ...this.store.rateGuideLastExposure?.[LAST_EXPOSURE_VERSIONED_KEY],
+        ...exposure[LAST_EXPOSURE_VERSIONED_KEY],
+      },
+    };
+  };
+
+  updateDashboardPanelOrder = (order: string[]) => {
+    this.store.dashboardPanelOrder = order;
   };
 }
 

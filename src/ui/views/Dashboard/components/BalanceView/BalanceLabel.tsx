@@ -1,41 +1,44 @@
+import { CurrencyItem } from '@/background/service/openapi';
 import { useRabbyDispatch, useRabbySelector } from '@/ui/store';
-import { splitNumberByStep } from '@/ui/utils';
+import { formatCurrency } from '@/ui/utils';
 import clsx from 'clsx';
 import React from 'react';
 
 interface Props {
-  isCache: boolean;
-  balance: number;
+  // isCache: boolean;
+  balanceUsd: number;
+  currency: CurrencyItem;
 }
-export const BalanceLabel: React.FC<Props> = ({ isCache, balance }) => {
-  const splitBalance = splitNumberByStep((balance || 0).toFixed(2));
+export const BalanceLabel: React.FC<Props> = ({ balanceUsd, currency }) => {
+  const formattedBalance = formatCurrency(balanceUsd || 0, { currency });
   const { hiddenBalance } = useRabbySelector((state) => state.preference);
   const dispatch = useRabbyDispatch();
 
-  const handleClick = () => {
+  const handleClick = (e: React.MouseEvent<HTMLElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
     dispatch.preference.setHiddenBalance(!hiddenBalance);
   };
 
   return (
     <div
       className={clsx(
-        'cursor-pointer transition-opacity',
-        isCache && 'opacity-80'
+        'cursor-pointer transition-opacity truncate'
+        // isCache && 'opacity-80'
       )}
-      title={splitBalance}
       onClick={handleClick}
     >
       {hiddenBalance ? (
-        <span
+        <div
           className={clsx(
-            'font-bold text-[32px] tracking-[16px]',
+            'font-bold text-[30px] leading-[36px] tracking-[16px]',
             'mr-[-16px] ml-4'
           )}
         >
           *****
-        </span>
+        </div>
       ) : (
-        <span>${splitBalance}</span>
+        <div>{formattedBalance}</div>
       )}
     </div>
   );

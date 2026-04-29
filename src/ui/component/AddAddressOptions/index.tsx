@@ -1,363 +1,228 @@
-import React, { useState } from 'react';
-import { useHistory } from 'react-router-dom';
+import React from 'react';
+import { useHistory, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { openInternalPageInTab } from 'ui/utils/webapi';
-import IconWalletConnect from 'ui/assets/walletlogo/walletconnect.svg';
-import IconCreatenewaddr from 'ui/assets/walletlogo/createnewaddr.svg';
-import IconAddwatchmodo from 'ui/assets/walletlogo/addwatchmode.svg';
-import IconHardWallet from 'ui/assets/address/hardwallet.svg';
-import IconMobileWallet from 'ui/assets/address/mobile-wallet.svg';
-import InstitutionalWallet from 'ui/assets/address/institutional-wallet.svg';
-import IconMetamask from 'ui/assets/dashboard/icon-metamask.svg';
-import IconMnemonics from 'ui/assets/import/mnemonics-light.svg';
-import IconPrivatekey from 'ui/assets/import/privatekey-light.svg';
-
-import './style.less';
-
-import {
-  IS_CHROME,
-  WALLET_BRAND_CONTENT,
-  BRAND_WALLET_CONNECT_TYPE,
-  WALLET_BRAND_TYPES,
-  IWalletBrandContent,
-  WALLET_SORT_SCORE,
-  WALLET_BRAND_CATEGORY,
-} from 'consts';
-
 import clsx from 'clsx';
-import _ from 'lodash';
+import './style.less';
+import { UI_TYPE } from '@/constant/ui';
+import { WALLET_BRAND_CONTENT, IWalletBrandContent } from 'consts';
 import { connectStore } from '@/ui/store';
-import { Item } from '../Item';
-import { useWallet } from '@/ui/utils';
-import { Modal } from 'antd';
+import { useAddAddressWalletOptions } from '@/ui/views/AddAddress/shared';
+import { Item } from '@/ui/component';
+import { ReactComponent as RcRightArrow } from 'ui/assets/address/right-arrow.svg';
+import {
+  RcAddAddressOptionCreateIcon,
+  RcAddAddressOptionSeedPhraseIcon,
+  RcAddAddressOptionPrivateKeyIcon,
+  RcAddAddressOptionHardwareIcon,
+  RcAddAddressOptionWatchIcon,
+} from '@/ui/assets/add-address';
+import { UseSeedPhrase } from '@/ui/views/AddFromCurrentSeedPhrase/hooks';
+import { message } from 'antd';
+import { useCreateAddressActions } from '@/ui/views/AddAddress/useCreateAddress';
 
-const getSortNum = (s: string) => WALLET_SORT_SCORE[s] || 999999;
+type AddAddressOption = {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+};
 
-const AddAddressOptions = () => {
+const RowIcon = ({
+  backgroundClassName,
+  children,
+}: {
+  backgroundClassName: string;
+  children: React.ReactNode;
+}) => {
+  return (
+    <div className={clsx('add-address-options__row-icon', backgroundClassName)}>
+      {children}
+    </div>
+  );
+};
+
+const AddAddressRow = ({
+  option,
+  className,
+}: {
+  option: AddAddressOption;
+  className?: string;
+}) => {
+  return (
+    <Item
+      py={15}
+      px={16}
+      className={clsx('add-address-options__row', className)}
+      rightIconClassName="add-address-options__row-arrow"
+      onClick={option.onClick}
+    >
+      <div className="add-address-options__row-content">
+        {option.icon}
+        <div className="add-address-options__row-label">{option.label}</div>
+      </div>
+    </Item>
+  );
+};
+
+const AddAddressOptions: React.FC<{
+  onNavigate?(type: string, state?: Record<string, any>): void;
+}> = ({ onNavigate }) => {
   const history = useHistory();
+  const location = useLocation();
   const { t } = useTranslation();
+  const { connectRouter } = useAddAddressWalletOptions({ onNavigate });
+  const { seedPhraseList } = UseSeedPhrase();
 
-  const wallet = useWallet();
+  const { createNewSeedPhrase } = useCreateAddressActions({
+    onNavigate,
+  });
 
-  const [selectedWalletType, setSelectedWalletType] = useState('');
-  const handleRouter = async (action: (h: typeof history) => void) =>
-    (await wallet.isBooted())
-      ? action(history)
-      : history.push({
-          pathname: '/password',
-          state: {
-            handle: (h: typeof history) => action(h),
-          },
-        });
+  const [preventMount, setPreventMount] = React.useState(true);
 
-  // keep selected wallet type
-  const rootRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
-    const lastSelectedWalletType = sessionStorage.getItem(
-      'SELECTED_WALLET_TYPE'
-    );
-    if (
-      lastSelectedWalletType &&
-      ([
-        WALLET_BRAND_CATEGORY.MOBILE,
-        WALLET_BRAND_CATEGORY.INSTITUTIONAL,
-      ] as string[]).includes(lastSelectedWalletType)
-    ) {
-      setSelectedWalletType(lastSelectedWalletType);
-      setTimeout(() => {
-        rootRef.current
-          ?.querySelector(`.${lastSelectedWalletType}`)
-          ?.scrollIntoView({
-            behavior: 'smooth',
-          });
-      }, 150);
+    if (!location.state) {
+      setPreventMount(false);
+      return;
     }
 
-    // clear cache when leave page
-    return () => {
-      sessionStorage.removeItem('SELECTED_WALLET_TYPE');
-    };
+    const { type, address, chainId } = location.state as any;
+    const brandContentKey = Object.keys(WALLET_BRAND_CONTENT).find((key) => {
+      const item = WALLET_BRAND_CONTENT[key] as IWalletBrandContent;
+      return item.name === type;
+    });
+
+    if (brandContentKey) {
+      connectRouter(WALLET_BRAND_CONTENT[brandContentKey], {
+        address,
+        chainId,
+      });
+      return;
+    }
+
+    setPreventMount(false);
+  }, [location.state, connectRouter]);
+
+  const pendingRef = React.useRef(false);
+
+  const setPendingAction = React.useCallback((action: boolean) => {
+    pendingRef.current = action;
   }, []);
 
-  const checkQRBasedWallet = async (item: IWalletBrandContent) => {
-    const { allowed, brand } = await wallet.checkQRHardwareAllowImport(
-      item.brand
-    );
-
-    if (!allowed) {
-      Modal.error({
-        title: 'Unable to import',
-        content: `Importing multiple QR-based hardware wallets is not supported. Please delete all addresses from ${brand} before importing another device.`,
-        okText: 'OK',
-        centered: true,
-        maskClosable: true,
-        className: 'text-center',
-      });
-      return false;
-    }
-
-    return true;
-  };
-
-  type Valueof<T> = T[keyof T];
-  const connectRouter1 = React.useCallback(
-    (history, item: Valueof<typeof WALLET_BRAND_CONTENT>) => {
-      if (item.connectType === 'BitBox02Connect') {
-        openInternalPageInTab('import/hardware?connectType=BITBOX02');
-      } else if (item.connectType === 'GridPlusConnect') {
-        openInternalPageInTab('import/hardware?connectType=GRIDPLUS');
-      } else if (item.connectType === 'TrezorConnect') {
-        openInternalPageInTab('import/hardware?connectType=TREZOR');
-      } else if (item.connectType === 'LedgerConnect') {
-        openInternalPageInTab(
-          IS_CHROME
-            ? 'import/hardware/ledger-connect'
-            : 'import/hardware/ledger'
-        );
-      } else if (item.connectType === 'OneKeyConnect') {
-        openInternalPageInTab('import/hardware?connectType=ONEKEY');
-      } else if (item.connectType === 'GnosisConnect') {
-        history.push({
-          pathname: '/import/gnosis',
-        });
-      } else if (item.connectType === BRAND_WALLET_CONNECT_TYPE.QRCodeBase) {
-        checkQRBasedWallet(item).then((success) => {
-          if (!success) return;
-          openInternalPageInTab(`import/hardware/qrcode?brand=${item.brand}`);
-        });
-      } else {
-        history.push({
-          pathname: '/import/wallet-connect',
-          state: {
-            brand: item,
-          },
-        });
-      }
-    },
-    []
-  );
-  const connectRouter = (item: Valueof<typeof WALLET_BRAND_CONTENT>) =>
-    handleRouter((h) => connectRouter1(h, item));
-  const brandWallet = React.useMemo(
-    () =>
-      (Object.values(WALLET_BRAND_CONTENT)
-        .map((item) => {
-          if (item.hidden) return;
-          return {
-            leftIcon: item.image,
-            content: t(item.name),
-            brand: item.brand,
-            connectType: item.connectType,
-            image: item.image,
-            onClick: () => connectRouter(item),
-            category: item.category,
-          };
-        })
-        .filter(Boolean) as any).sort(
-        (a, b) => getSortNum(a.brand) - getSortNum(b.brand)
-      ),
-    [t, connectRouter]
-  );
-
-  const wallets = React.useMemo(() => _.groupBy(brandWallet, 'category'), [
-    brandWallet,
-  ]);
-
-  const renderList = React.useMemo(
-    () =>
-      [
-        {
-          title: 'Connect Hardware Wallets',
-          key: WALLET_BRAND_CATEGORY.HARDWARE,
-          icon: IconHardWallet,
-        },
-        {
-          title: 'Connect Mobile Wallet Apps',
-          key: WALLET_BRAND_CATEGORY.MOBILE,
-          icon: IconMobileWallet,
-        },
-        {
-          title: 'Connect Institutional Wallets',
-          key: WALLET_BRAND_CATEGORY.INSTITUTIONAL,
-          icon: InstitutionalWallet,
-        },
-      ]
-        .map((item) => {
-          return {
-            ...item,
-            values: wallets[item.key],
-          };
-        })
-        .filter((item) => item.values),
-    [wallets]
-  );
-
-  const createIMportAddrList = React.useMemo(
+  const options = React.useMemo<AddAddressOption[]>(
     () => [
       {
-        leftIcon: IconCreatenewaddr,
-        content: t('createAddress'),
-        brand: 'createAddress',
+        key: 'add-new-address',
+        label: t('page.newAddress.addNewAddress'),
+        icon: <RcAddAddressOptionCreateIcon />,
+        onClick: async () => {
+          if (pendingRef.current) {
+            return;
+          }
+          if (seedPhraseList?.length > 0) {
+            if (UI_TYPE.isDesktop) {
+              onNavigate?.('add-new-address');
+            } else {
+              history.push('/add-address/new-address');
+            }
+          } else {
+            try {
+              setPendingAction(true);
+              await createNewSeedPhrase();
+            } catch (error) {
+              message.error(
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to create seed phrase'
+              );
+            } finally {
+              setPendingAction(false);
+            }
+          }
+        },
+      },
+      {
+        key: 'import-seed-phrase',
+        label: t('page.newAddress.importSeedPhrase'),
+        icon: <RcAddAddressOptionSeedPhraseIcon />,
         onClick: () => {
-          handleRouter(() => openInternalPageInTab('mnemonics/create'));
+          if (UI_TYPE.isDesktop) {
+            onNavigate?.('import-key-or-seed', { tab: 'seedPhrase' });
+          } else {
+            history.push('/add-address/import?tab=seedPhrase');
+          }
+        },
+      },
+      {
+        key: 'import-private-key',
+        label: t('page.newAddress.importPrivateKey'),
+        icon: <RcAddAddressOptionPrivateKeyIcon />,
+        onClick: () => {
+          if (UI_TYPE.isDesktop) {
+            onNavigate?.('import-key-or-seed', { tab: 'privateKey' });
+          } else {
+            history.push('/add-address/import?tab=privateKey');
+          }
+        },
+      },
+      {
+        key: 'connect-hardware-wallet',
+        label: t('page.newAddress.connectHardwareWallets'),
+        icon: <RcAddAddressOptionHardwareIcon />,
+        onClick: () => {
+          if (UI_TYPE.isDesktop) {
+            onNavigate?.('hardware-wallets');
+          } else {
+            history.push('/add-address/hardware-wallets');
+          }
+        },
+      },
+      {
+        key: 'watch-address',
+        label: t('page.newAddress.watchAddress'),
+        icon: <RcAddAddressOptionWatchIcon />,
+        onClick: () => {
+          if (UI_TYPE.isDesktop) {
+            onNavigate?.('watch-address');
+          } else {
+            history.push('/import/watch-address');
+          }
         },
       },
     ],
-    [t]
+    [history, onNavigate, t, createNewSeedPhrase, seedPhraseList?.length]
   );
 
-  const centerList = React.useMemo(
-    () => [
-      {
-        leftIcon: IconMnemonics,
-        brand: 'importSeedPhrase',
-        content: 'Import Seed Phrase',
-        onClick: () =>
-          handleRouter(() => openInternalPageInTab('import/mnemonics')),
-      },
-      {
-        leftIcon: IconPrivatekey,
-        brand: 'importPrivatekey',
-        content: 'Import Private Key',
-        onClick: () => handleRouter((history) => history.push('/import/key')),
-      },
-      {
-        leftIcon: IconMetamask,
-        brand: 'addMetaMaskAccount',
-        content: 'Import My MetaMask Account',
-        onClick: () =>
-          handleRouter((history) => history.push('/import/metamask')),
-      },
-    ],
-    []
-  );
-
-  const bottomList = React.useMemo(
-    () => [
-      {
-        leftIcon: IconAddwatchmodo,
-        brand: 'addWatchMode',
-        content: 'Add Contacts',
-        subText: 'You can also use it as a watch-only address',
-        onClick: () =>
-          handleRouter((history) => history.push('/import/watch-address')),
-      },
-    ],
-    [t]
-  );
+  if (preventMount) {
+    return null;
+  }
 
   return (
-    <div className="rabby-container pb-[12px]" ref={rootRef}>
-      {[createIMportAddrList, centerList].map((items, index) => (
-        <div className="bg-white rounded-[6px] mb-[12px]" key={index}>
-          {items.map((e) => {
-            return (
-              <Item key={e.brand} leftIcon={e.leftIcon} onClick={e.onClick}>
-                <div className="pl-[12px] text-13 leading-[15px] text-gray-title font-medium">
-                  {e.content}
-                </div>
-              </Item>
-            );
-          })}
-        </div>
-      ))}
-
-      <div className="bg-white rounded-[6px] mb-[12px]">
-        {renderList.map((item) => {
-          const isSelected = selectedWalletType === item.key;
-          return (
-            <div key={item.key} className={clsx(isSelected && 'pb-[16px]')}>
-              <Item
-                hoverBorder={false}
-                leftIcon={item.icon}
-                className={clsx('bg-transparent', item.key)}
-                rightIconClassName={clsx(
-                  'ml-[8px] transition-transform',
-                  isSelected ? '-rotate-90' : 'rotate-90'
-                )}
-                onClick={() => {
-                  setSelectedWalletType((v) =>
-                    v === item.key ? '' : item.key
-                  );
-                }}
-              >
-                <div className="pl-[12px] text-13 leading-[15px] text-gray-title font-medium">
-                  {item.title}
-                </div>
-                <div className="ml-auto relative w-[52px] h-[20px]">
-                  {item.values.slice(0, 3).map((wallet, i) => (
-                    <img
-                      key={wallet.image}
-                      src={wallet.leftIcon || wallet.image}
-                      className="absolute top-0 w-[20px] h-[20px] select-none"
-                      onDragStart={() => false}
-                      style={{
-                        left: 0 + 16 * i,
-                      }}
-                    />
-                  ))}
-                </div>
-              </Item>
-              <div
-                className={clsx(
-                  'mx-[16px] bg-gray-bg2 rounded-[6px] transition-all  overflow-hidden',
-                  !isSelected ? 'max-h-0' : 'max-h-[500px]'
-                )}
-              >
-                <div className="py-[8px] grid grid-cols-3 gap-x-0">
-                  {item.values.map((v) => {
-                    return (
-                      <Item
-                        bgColor="transparent"
-                        className="flex-col justify-center hover:border-transparent"
-                        py={10}
-                        px={0}
-                        key={v.brand}
-                        left={
-                          <div className="relative w-[28px] h-[28px]">
-                            <img
-                              src={v.image}
-                              className="w-[28px] h-[28px] rounded-full"
-                            />
-                            {v.connectType === 'WalletConnect' &&
-                              v.brand !== WALLET_BRAND_TYPES.WALLETCONNECT && (
-                                <img
-                                  src={IconWalletConnect}
-                                  className="absolute -bottom-6 -right-6 w-[14px] h-[14px] rounded-full"
-                                />
-                              )}
-                          </div>
-                        }
-                        rightIcon={null}
-                        onClick={v.onClick}
-                      >
-                        <span className="text-12 font-medium text-gray-title mt-[8px]">
-                          {v.content}
-                        </span>
-                      </Item>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          );
-        })}
+    <div
+      className={clsx('add-address-options', UI_TYPE.isDesktop ? 'w-full' : '')}
+    >
+      <div className="add-address-options__list">
+        {options.map((option) => (
+          <AddAddressRow key={option.key} option={option} />
+        ))}
       </div>
 
-      <div className="bg-white rounded-[6px]">
-        {bottomList.map((e) => {
-          return (
-            <Item key={e.brand} leftIcon={e.leftIcon} onClick={e.onClick}>
-              <div className="flex flex-col pl-[12px]">
-                <div className=" text-13 leading-[15px] text-gray-title font-medium">
-                  {e.content}
-                </div>
-                <div className="text-12 text-gray-subTitle">{e.subText}</div>
-              </div>
-            </Item>
-          );
-        })}
-      </div>
+      <button
+        type="button"
+        className="add-address-options__institutional-entry"
+        onClick={() => {
+          if (UI_TYPE.isDesktop) {
+            onNavigate?.('institutional-wallets');
+          } else {
+            history.push('/add-address/institutional-wallets');
+          }
+        }}
+      >
+        <span>{t('page.newAddress.connectInstitutionalWallets')}</span>
+        <RcRightArrow
+          viewBox="0 0 20 20"
+          className="add-address-options__institutional-arrow"
+        />
+      </button>
     </div>
   );
 };

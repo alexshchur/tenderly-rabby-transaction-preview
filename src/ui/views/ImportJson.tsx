@@ -7,7 +7,11 @@ import { useWallet, useWalletRequest } from 'ui/utils';
 import clsx from 'clsx';
 import { useMedia } from 'react-use';
 
-const ImportJson = () => {
+const ImportJson: React.FC<{
+  isInModal?: boolean;
+  onBack?(): void;
+  onNavigate?(type: string, state?: Record<string, any>): void;
+}> = ({ isInModal, onNavigate, onBack }) => {
   const history = useHistory();
   const [form] = Form.useForm();
   const wallet = useWallet();
@@ -17,11 +21,20 @@ const ImportJson = () => {
 
   const [run, loading] = useWalletRequest(wallet.importJson, {
     onSuccess(accounts) {
+      if (onNavigate) {
+        onNavigate('success', {
+          accounts,
+          title: t('page.newAddress.addressImported'),
+          editing: true,
+          importedAccount: true,
+        });
+        return;
+      }
       history.replace({
         pathname: '/popup/import/success',
         state: {
           accounts,
-          title: t('Imported Successfully'),
+          title: t('page.newAddress.addressImported'),
           editing: true,
           importedAccount: true,
         },
@@ -31,7 +44,7 @@ const ImportJson = () => {
       form.setFields([
         {
           name: 'password',
-          errors: [err?.message || t('incorrect password')],
+          errors: [err?.message || t('page.newAddress.incorrectPassword')],
         },
       ]);
     },
@@ -40,7 +53,10 @@ const ImportJson = () => {
   return (
     <StrayPageWithButton
       custom={isWide}
-      className={clsx(isWide && 'rabby-stray-page')}
+      className={clsx(
+        isWide && 'rabby-stray-page',
+        isInModal ? 'min-h-0 h-[600px] overflow-auto' : ''
+      )}
       onSubmit={({ keyStore, password }) => run(keyStore, password)}
       form={form}
       spinning={loading}
@@ -48,21 +64,25 @@ const ImportJson = () => {
       hasDivider
       noPadding
       nextDisabled={!isUpload}
-      NextButtonContent="Confirm"
+      NextButtonContent={t('global.confirm')}
     >
       <Navbar
         onBack={() => {
+          if (onBack) {
+            onBack();
+            return;
+          }
           if (history.length > 1) {
             history.goBack();
           } else {
             history.replace('/');
           }
         }}
-        desc="Select the keystore file you want to import and enter the corresponding password"
+        desc={t('page.newAddress.keystore.description')}
       >
-        Import Your KeyStore
+        {t('page.newAddress.importYourKeystore')}
       </Navbar>
-      <div className="rabby-container">
+      <div className="rabby-container widget-has-ant-input">
         <div className="px-20">
           <Form.Item
             className="mx-auto mt-[32px] mb-[24px]"
@@ -84,10 +104,15 @@ const ImportJson = () => {
           </Form.Item>
           <Form.Item
             name="password"
-            rules={[{ required: true, message: t('Please input Password') }]}
+            rules={[
+              {
+                required: true,
+                message: t('page.newAddress.keystore.password.required'),
+              },
+            ]}
           >
             <Input
-              placeholder={t('Password')}
+              placeholder={t('page.newAddress.keystore.password.placeholder')}
               type="password"
               size="large"
               spellCheck={false}

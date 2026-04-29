@@ -9,6 +9,7 @@
       content="initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover"
     />
     <link href="/css/Roboto+Mono+Lato.css" rel="stylesheet" />
+    <link href="/css/Noto+Sans+JP.css" rel="stylesheet" />
     <title>Rabby Wallet Notification</title>
     <script src="/vendor/matomo.js"></script>
     <style>
@@ -22,10 +23,16 @@
         background-color: #c1c1c1;
         border-radius: 4px;
       }
+      @media screen and (min-width: 401px) {
+        .ant-drawer-bottom {
+          max-width: 400px;
+          left: calc(50% - 200px) !important;
+        }
+      }
     </style>
   </head>
 
   <body class="h-full w-full">
-    <div id="root" class="overflow-x-hidden overflow-y-auto"></div>
+    <div id="root" class="overflow-x-hidden overflow-y-auto h-full"></div>
   </body>
 </html>

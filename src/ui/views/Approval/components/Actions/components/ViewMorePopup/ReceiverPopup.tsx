@@ -1,12 +1,16 @@
 import React, { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Chain } from 'background/service/openapi';
 import { ContractDesc, TokenItem } from '@rabby-wallet/rabby-api/dist/types';
 import { Table, Col, Row } from '../Table';
 import * as Values from '../Values';
 import LogoWithText from '../LogoWithText';
 import { ellipsisTokenSymbol, getTokenSymbol } from '@/ui/utils/token';
+import RabbyChainLogo from '@/ui/assets/rabby-chain-logo.png';
+import { ALIAS_ADDRESS } from '@/constant';
 
-interface ReceiverData {
+export interface ReceiverData {
+  title?: string;
   address: string;
   chain: Chain;
   eoa: {
@@ -28,6 +32,11 @@ interface ReceiverData {
   name: string | null;
   onTransferWhitelist: boolean;
   token?: TokenItem;
+  isLabelAddress?: boolean;
+  labelAddressLogo?: string;
+  hasReceiverMnemonicInWallet?: boolean;
+  hasReceiverPrivateKeyInWallet?: boolean;
+  rank?: number;
 }
 
 export interface Props {
@@ -39,15 +48,16 @@ export interface ReceiverPopupProps extends Props {
 }
 
 export const ReceiverPopup: React.FC<Props> = ({ data }) => {
+  const { t } = useTranslation();
   const receiverType = useMemo(() => {
     if (data.contract) {
-      return 'Contract';
+      return t('page.signTx.contract');
     }
     if (data.eoa) {
-      return 'EOA';
+      return t('page.signTx.tokenApprove.eoaAddress');
     }
     if (data.cex) {
-      return 'EOA';
+      return t('page.signTx.tokenApprove.eoaAddress');
     }
   }, [data]);
 
@@ -69,11 +79,15 @@ export const ReceiverPopup: React.FC<Props> = ({ data }) => {
     return null;
   }, [data]);
 
+  const isLabelAddress =
+    data.isLabelAddress ||
+    !!(data.name && Object.values(ALIAS_ADDRESS).includes(data.name));
+
   return (
     <div>
       <div className="title">
-        Send to{' '}
-        <Values.Address
+        {data.title || t('page.signTx.send.sendTo')}{' '}
+        <Values.AddressWithCopy
           address={data.address}
           chain={data.chain}
           iconWidth="14px"
@@ -81,13 +95,13 @@ export const ReceiverPopup: React.FC<Props> = ({ data }) => {
       </div>
       <Table className="view-more-table">
         <Col>
-          <Row className="bg-[#F6F8FF]">Address note</Row>
+          <Row>{t('page.signTx.addressNote')}</Row>
           <Row>
             <Values.AddressMemo address={data.address} />
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Address type</Row>
+          <Row>{t('page.signTx.addressTypeTitle')}</Row>
           <Row>
             <div>
               {receiverType}
@@ -100,29 +114,66 @@ export const ReceiverPopup: React.FC<Props> = ({ data }) => {
                       <li>MultiSig: {contractOnCurrentChain.multisig.name}</li>
                     )}
                   {data.contract && !contractOnCurrentChain && (
-                    <li>Not on this chain</li>
+                    <li>{t('page.signTx.send.notOnThisChain')}</li>
                   )}
-                  {data.name && <li>{data.name}</li>}
+                  {data.name && !isLabelAddress && (
+                    <li>
+                      {data.name.replace(/^Token: /, 'Token ') +
+                        ' contract address'}
+                    </li>
+                  )}
                 </ul>
               )}
             </div>
           </Row>
         </Col>
+        {data.hasReceiverMnemonicInWallet && (
+          <Col>
+            <Row>{t('page.signTx.addressSource')}</Row>
+            <Row>{t('page.signTx.send.fromMySeedPhrase')}</Row>
+          </Col>
+        )}
+        {data.hasReceiverPrivateKeyInWallet && (
+          <Col>
+            <Row>{t('page.signTx.addressSource')}</Row>
+            <Row>{t('page.signTx.send.fromMyPrivateKey')}</Row>
+          </Col>
+        )}
+        {data.name && isLabelAddress && (
+          <Col>
+            <Row>{t('page.signTx.label')}</Row>
+            <Row>
+              <LogoWithText
+                text={data.name}
+                logo={data.labelAddressLogo || RabbyChainLogo}
+                logoRadius="100%"
+                logoSize={14}
+                textStyle={{
+                  fontSize: '13px',
+                  color: 'var(--r-neutral-body, #3E495E)',
+                }}
+              />
+            </Row>
+          </Col>
+        )}
         {data.cex && (
           <Col>
-            <Row className="bg-[#F6F8FF]">CEX address</Row>
+            <Row>{t('page.signTx.send.cexAddress')}</Row>
             <Row>
               <div>
                 <LogoWithText logo={data.cex.logo} text={data.cex.name} />
                 {(!data.cex.isDeposit || !data.cex.supportToken) && (
                   <ul className="desc-list">
-                    {!data.cex.isDeposit && <li>Not top up address</li>}
+                    {!data.cex.isDeposit && (
+                      <li>{t('page.signTx.send.notTopupAddress')}</li>
+                    )}
                     {!data.cex.supportToken && (
                       <li>
-                        {data.token
-                          ? ellipsisTokenSymbol(getTokenSymbol(data.token))
-                          : 'NFT'}{' '}
-                        not supported
+                        {t('page.signTx.send.tokenNotSupport', [
+                          data.token
+                            ? ellipsisTokenSymbol(getTokenSymbol(data.token))
+                            : 'NFT',
+                        ])}
                       </li>
                     )}
                   </ul>
@@ -133,38 +184,40 @@ export const ReceiverPopup: React.FC<Props> = ({ data }) => {
         )}
         {data.isTokenContract && (
           <Col>
-            <Row className="bg-[#F6F8FF]">Token address</Row>
+            <Row>{t('page.signTx.send.receiverIsTokenAddress')}</Row>
             <Row>
               <Values.Boolean value={data.isTokenContract} />
             </Row>
           </Col>
         )}
         <Col>
-          <Row className="bg-[#F6F8FF]">
-            {data.contract ? 'Deployed time' : 'First on-chain'}
+          <Row>
+            {data.contract
+              ? t('page.signTx.deployTimeTitle')
+              : t('page.signTx.firstOnChain')}
           </Row>
           <Row>
             <Values.TimeSpan value={bornAt} />
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Address balance</Row>
+          <Row>{t('page.signTx.send.addressBalanceTitle')}</Row>
           <Row>
             <Values.USDValue value={data.usd_value} />
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Transacted before</Row>
+          <Row>{t('page.signTx.transacted')}</Row>
           <Row>
             <Values.Boolean value={data.hasTransfer} />
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Whitelist</Row>
+          <Row>{t('page.signTx.send.whitelistTitle')}</Row>
           <Row>
             {data.onTransferWhitelist
-              ? 'On my whitelist'
-              : 'Not on my whitelist '}
+              ? t('page.signTx.send.onMyWhitelist')
+              : t('page.signTx.send.notOnWhitelist')}
           </Row>
         </Col>
       </Table>

@@ -1,34 +1,100 @@
+const child_process = require('child_process');
+const path = require('path');
+
 const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const TSConfigPathsPlugin = require('tsconfig-paths-webpack-plugin');
 const ESLintWebpackPlugin = require('eslint-webpack-plugin');
 const tsImportPluginFactory = require('ts-import-plugin');
-const AssetReplacePlugin = require('./plugins/AssetReplacePlugin');
-const { version } = require('../_raw/manifest.json');
-const { tenderlyAccount, tenderlyProject, tenderlyAccessToken } = require('../_raw/tenderly.json');
-const path = require('path');
+const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
+const CopyPlugin = require('copy-webpack-plugin');
+const {
+  resolveManifestFilename,
+  resolveManifestVersion,
+} = require('./manifest-utils');
+
+let tenderlyConfig = {
+  tenderlyAccount: '',
+  tenderlyProject: '',
+  tenderlyAccessToken: '',
+};
+
+try {
+  tenderlyConfig = require('../_raw/tenderly.json');
+} catch (error) {
+  // Keep local builds working when Tenderly credentials are not configured.
+}
+
+const { tenderlyAccount, tenderlyProject, tenderlyAccessToken } =
+  tenderlyConfig;
 
 const createStyledComponentsTransformer = require('typescript-plugin-styled-components')
   .default;
 
 const isEnvDevelopment = process.env.NODE_ENV !== 'production';
+const useForkTsChecker = process.env.FORK_TS_CHECKER === 'enable';
 
 const paths = require('./paths');
 
+const BUILD_GIT_HASH = child_process
+  .execSync('git rev-parse HEAD')
+  .toString()
+  .trim()
+  .slice(0, 8);
+
+const {
+  transformer: tsStyledComponentTransformer,
+  webpackPlugin: tsStyledComponentPlugin,
+} = createStyledComponentsTransformer({
+  ssr: true, // always enable it to make all styled generated component has id.
+  displayName: isEnvDevelopment,
+  minify: false, // it's still an experimental feature
+  componentIdPrefix: 'rabby-',
+});
+// 'chrome-mv2', 'chrome-mv3', 'firefox-mv2', 'firefox-mv3'
+const MANIFEST_TYPE = process.env.MANIFEST_TYPE || 'chrome-mv2';
+const IS_MANIFEST_MV3 = MANIFEST_TYPE.includes('-mv3');
+const FINAL_DIST = IS_MANIFEST_MV3 ? paths.dist : paths.distMv2;
+const IS_FIREFOX = MANIFEST_TYPE.includes('firefox');
+const BUILD_ENV = process.env.RABBY_BUILD_ENV || '';
+
+const MANIFEST_FILENAME = resolveManifestFilename({
+  manifestType: MANIFEST_TYPE,
+  buildEnv: BUILD_ENV,
+});
+const APP_VERSION =
+  process.env.VERSION ||
+  resolveManifestVersion({
+    manifestType: MANIFEST_TYPE,
+    buildEnv: BUILD_ENV,
+  });
+
 const config = {
   entry: {
-    background: paths.rootResolve('src/background/index.ts'),
+    background: {
+      import: paths.rootResolve('src/background/index.ts'),
+      asyncChunks: false,
+    },
     'content-script': paths.rootResolve('src/content-script/index.ts'),
-    pageProvider: paths.rootResolve(
-      'node_modules/@rabby-wallet/page-provider/dist/index.js'
-    ),
+    pageProvider: paths.rootResolve('src/content-script/page-provider.ts'),
     ui: paths.rootResolve('src/ui/index.tsx'),
+    offscreen: paths.rootResolve('src/offscreen/scripts/offscreen.ts'),
   },
   output: {
-    path: paths.dist,
+    path: FINAL_DIST,
     filename: '[name].js',
     publicPath: '/',
   },
+  ...(useForkTsChecker
+    ? {
+        cache: {
+          type: 'filesystem',
+          buildDependencies: {
+            config: [__filename],
+          },
+        },
+      }
+    : {}),
   module: {
     rules: [
       {
@@ -40,6 +106,13 @@ const config = {
             sideEffects: true,
             test: /[\\/]pageProvider[\\/]index.ts/,
             loader: 'ts-loader',
+            ...(useForkTsChecker
+              ? {
+                  options: {
+                    transpileOnly: true,
+                  },
+                }
+              : {}),
           },
           {
             test: /[\\/]ui[\\/]index.tsx/,
@@ -86,15 +159,11 @@ const config = {
           {
             loader: 'ts-loader',
             options: {
+              ...(useForkTsChecker ? { transpileOnly: true } : {}),
               getCustomTransformers: () => ({
                 before: [
                   // @see https://github.com/Igorbek/typescript-plugin-styled-components#ts-loader
-                  createStyledComponentsTransformer({
-                    ssr: true, // always enable it to make all styled generated component has id.
-                    displayName: isEnvDevelopment,
-                    minify: false, // it's still an experimental feature
-                    componentIdPrefix: 'rabby-',
-                  }),
+                  tsStyledComponentTransformer,
                 ],
               }),
             },
@@ -181,7 +250,18 @@ const config = {
   plugins: [
     new ESLintWebpackPlugin({
       extensions: ['ts', 'tsx', 'js', 'jsx'],
+      ...(useForkTsChecker ? { lintDirtyModulesOnly: true } : {}),
     }),
+    ...(useForkTsChecker
+      ? [
+          new ForkTsCheckerWebpackPlugin({
+            async: isEnvDevelopment,
+            typescript: {
+              memoryLimit: 2048,
+            },
+          }),
+        ]
+      : []),
     // new AntdDayjsWebpackPlugin(),
     new HtmlWebpackPlugin({
       inject: true,
@@ -203,25 +283,86 @@ const config = {
     }),
     new HtmlWebpackPlugin({
       inject: true,
+      template: paths.desktopHtml,
+      chunks: ['ui'],
+      filename: 'desktop.html',
+    }),
+    new HtmlWebpackPlugin({
+      inject: true,
       template: paths.backgroundHtml,
       chunks: ['background'],
       filename: 'background.html',
+    }),
+    new HtmlWebpackPlugin({
+      inject: true,
+      template: paths.offscreenHtml,
+      chunks: ['offscreen'],
+      filename: 'offscreen.html',
     }),
     new webpack.ProvidePlugin({
       Buffer: ['buffer', 'Buffer'],
       process: 'process',
       dayjs: 'dayjs',
     }),
-    new AssetReplacePlugin({
-      '#PAGEPROVIDER#': 'pageProvider',
-    }),
     new webpack.DefinePlugin({
-      'process.env.version': JSON.stringify(`version: ${version}`),
-      'process.env.release': JSON.stringify(version),
+      'process.env.version': JSON.stringify(`version: ${APP_VERSION}`),
+      'process.env.release': JSON.stringify(APP_VERSION),
+      'process.env.RABBY_BUILD_GIT_HASH': JSON.stringify(BUILD_GIT_HASH),
+      'process.env.ETHERSCAN_KEY': JSON.stringify(process.env.ETHERSCAN_KEY),
       'process.env.TENDERLY_ACCOUNT': JSON.stringify(tenderlyAccount),
       'process.env.TENDERLY_PROJECT_ID': JSON.stringify(tenderlyProject),
       'process.env.TENDERLY_ACCESS_TOKEN': JSON.stringify(tenderlyAccessToken),
     }),
+    new CopyPlugin({
+      patterns: [
+        { from: paths.rootResolve('_raw'), to: FINAL_DIST },
+        {
+          from: paths.rootResolve(
+            `src/manifest/${MANIFEST_TYPE}/${MANIFEST_FILENAME}`
+          ),
+          to: path.resolve(FINAL_DIST, 'manifest.json'),
+        },
+        IS_MANIFEST_MV3
+          ? {
+              from: require.resolve(
+                '@trezor/connect-webextension/build/content-script.js'
+              ),
+              to: path.resolve(
+                FINAL_DIST,
+                './vendor/trezor/trezor-content-script.js'
+              ),
+            }
+          : {
+              from: require.resolve(
+                '@trezor/connect-web/lib/webextension/trezor-content-script.js'
+              ),
+              to: path.resolve(
+                FINAL_DIST,
+                './vendor/trezor/trezor-content-script.js'
+              ),
+            },
+        IS_MANIFEST_MV3
+          ? {
+              from: require.resolve(
+                '@trezor/connect-webextension/build/trezor-connect-webextension.js'
+              ),
+              to: path.resolve(
+                FINAL_DIST,
+                './vendor/trezor/trezor-connect-webextension.js'
+              ),
+            }
+          : {
+              from: require.resolve(
+                '@trezor/connect-web/lib/webextension/trezor-usb-permissions.js'
+              ),
+              to: path.resolve(
+                FINAL_DIST,
+                './vendor/trezor/trezor-usb-permissions.js'
+              ),
+            },
+      ],
+    }),
+    tsStyledComponentPlugin,
   ],
   resolve: {
     alias: {
@@ -232,23 +373,51 @@ const config = {
     fallback: {
       stream: require.resolve('stream-browserify'),
       crypto: require.resolve('crypto-browserify'),
+      url: require.resolve('url'),
+      zlib: require.resolve('browserify-zlib'),
+      https: require.resolve('https-browserify'),
+      http: require.resolve('stream-http'),
     },
     extensions: ['.js', 'jsx', '.ts', '.tsx'],
   },
   stats: 'minimal',
   optimization: {
     splitChunks: {
+      ...(IS_FIREFOX && {
+        chunks: (chunk) =>
+          chunk.name !== 'content-script' && chunk.name !== 'pageProvider',
+        minSize: 10000,
+        maxSize: 4000000,
+        minChunks: 1,
+        maxAsyncRequests: 30,
+        maxInitialRequests: 30,
+      }),
       cacheGroups: {
         'webextension-polyfill': {
           minSize: 0,
           test: /[\\/]node_modules[\\/]webextension-polyfill/,
           name: 'webextension-polyfill',
           chunks: 'all',
+          priority: 100,
         },
+        ...(IS_FIREFOX && {
+          vendors: {
+            test: /[\\/]node_modules[\\/]/,
+            name: 'vendors',
+            priority: -10,
+            reuseExistingChunk: true,
+          },
+          default: {
+            minChunks: 2,
+            priority: -20,
+            reuseExistingChunk: true,
+          },
+        }),
       },
     },
   },
   experiments: {
+    asyncWebAssembly: true,
     topLevelAwait: true,
   },
 };

@@ -10,26 +10,32 @@ import { matomoRequestEvent } from '@/utils/matomo-request';
 import { getKRCategoryByType } from '@/utils/transaction';
 import NFTModal from '../Dashboard/components/NFT/NFTModal';
 import { CollectionListSkeleton } from './CollectionListSkeleton';
-import styled from 'styled-components';
+import styled, { css } from 'styled-components';
 import { useCollection } from './useCollection';
 import { NFTListEmpty, NFTStarredListEmpty } from './NFTEmpty';
+import { useTranslation } from 'react-i18next';
+import clsx from 'clsx';
 
 const TabsStyled = styled(Tabs)`
   .ant-tabs-tab {
-    border-radius: 2px;
-    color: #4b4d59;
-    font-size: 13px;
-    transition: all 0.3s ease-in-out;
+    border-radius: 4px;
+    color: var(--r-neutral-body, #3e495e);
+    font-size: 12px;
+    transition: background-color 0.3s ease-in-out;
     margin: 0 !important;
-    width: 88px;
-    height: 24px;
+    width: 100px;
+    height: 28px;
     font-weight: 500;
     padding: 0;
     text-align: center;
 
     &.ant-tabs-tab-active {
-      background: #fff;
-      color: #8697ff;
+      background: var(--r-neutral-card-1, #fff);
+      color: var(--r-blue-default, #7084ff);
+    }
+
+    &:hover {
+      color: var(--r-blue-default, #7084ff);
     }
   }
 
@@ -37,11 +43,15 @@ const TabsStyled = styled(Tabs)`
     margin: auto;
   }
 
+  &.ant-tabs-top > .ant-tabs-nav::before {
+    border-bottom-color: transparent;
+  }
+
   .ant-tabs-nav-list {
     margin: auto;
-    background: #e5e9ef;
-    border-radius: 4px;
-    padding: 3px;
+    background: var(--r-neutral-line, #d3d8e0);
+    border-radius: 6px;
+    padding: 2px;
   }
 
   .ant-tabs-ink-bar {
@@ -49,12 +59,15 @@ const TabsStyled = styled(Tabs)`
   }
 
   .ant-tabs-tabpane {
-    height: calc(100vh - 100px);
+    /* height: calc(100vh - 100px); */
+    height: 500px;
     overflow: auto;
   }
 `;
 
-export const NFTView: React.FC = () => {
+export const NFTView: React.FC<{
+  isInModal?: boolean;
+}> = ({ isInModal }) => {
   const history = useHistory();
   const handleClickBack = React.useCallback(() => {
     history.replace('/');
@@ -71,7 +84,7 @@ export const NFTView: React.FC = () => {
     onToggleStar,
     checkStarred,
   } = useCollection();
-
+  const { t } = useTranslation();
   const handleShowModal = React.useCallback((item: NFTItem, name: string) => {
     setCollectionName(name);
     setNFTItem(item);
@@ -93,13 +106,24 @@ export const NFTView: React.FC = () => {
   }, []);
 
   return (
-    <div className="nft-view px-20 pb-20 bg-[#F0F2F5] h-screen">
-      <PageHeader onBack={handleClickBack} forceShowBack>
-        {'NFT'}
-      </PageHeader>
+    <div
+      className={clsx(
+        'nft-view px-20 pb-20 bg-r-neutral-bg-2 h-screen',
+        isInModal ? 'is-in-modal' : ''
+      )}
+    >
+      {isInModal ? (
+        <div className="text-center text-r-neutral-title1 text-[20px] leading-[24px] font-medium py-[16px]">
+          {t('page.nft.title')}
+        </div>
+      ) : (
+        <PageHeader onBack={handleClickBack} forceShowBack>
+          {t('page.nft.title')}
+        </PageHeader>
+      )}
       <div>
         <TabsStyled defaultActiveKey={tab} centered onChange={setTab}>
-          <Tabs.TabPane tab="All" key="all">
+          <Tabs.TabPane tab={t('page.nft.all')} key="all">
             {isLoading ? (
               <CollectionListSkeleton />
             ) : list.length ? (
@@ -118,7 +142,12 @@ export const NFTView: React.FC = () => {
               <NFTListEmpty />
             )}
           </Tabs.TabPane>
-          <Tabs.TabPane tab={`Starred (${starredList.length})`} key="starred">
+          <Tabs.TabPane
+            tab={t('page.nft.starred', {
+              count: starredList.length,
+            })}
+            key="starred"
+          >
             {isLoading ? (
               <CollectionListSkeleton />
             ) : starredList.length ? (
@@ -154,7 +183,13 @@ export const NFTView: React.FC = () => {
         }}
         onCancel={handleHideModal}
       >
-        {nftItem && <NFTModal data={nftItem} collectionName={collectionName} />}
+        {nftItem && (
+          <NFTModal
+            data={nftItem}
+            collectionName={collectionName}
+            onClose={handleHideModal}
+          />
+        )}
       </Modal>
     </div>
   );

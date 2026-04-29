@@ -6,7 +6,7 @@
 
   .tabs {
     display: flex;
-    gap: 16px 10px;
+    gap: 8px 10px;
     flex-wrap: wrap;
     padding-bottom: 8px;
 
@@ -15,12 +15,12 @@
       font-weight: 400;
       font-size: 12px;
       line-height: 14px;
-      color: #4b4d59;
+      color: var(--r-neutral-body, #3e495e);
       position: relative;
       cursor: pointer;
 
       &.is-active {
-        color: #8697ff;
+        color: var(--r-blue-default, #7084ff);
         &::after {
           position: absolute;
           content: '';
@@ -28,7 +28,7 @@
           left: 0;
           right: 0;
           height: 2px;
-          background-color: #8697ff;
+          background-color: var(--r-blue-default, #7084ff);
         }
       }
     }
@@ -46,7 +46,7 @@
   }
   .rabby-list {
     border-radius: 6px;
-    background-color: #fff;
+    background-color: var(--r-neutral-card-1, #fff);
     margin-bottom: 20px;
     &-item {
       padding-left: 16px;
@@ -55,14 +55,14 @@
 
       &:not(.no-hover):hover {
         background-color: rgba(134, 151, 255, 0.2);
-        border-color: #8697ff;
+        border-color: var(--r-blue-default, #7084ff);
       }
 
       &-label {
         font-weight: 500;
         font-size: 14px;
         line-height: 16px;
-        color: @color-title;
+        color: var(--r-neutral-title-1, #192945);
         gap: 4px;
         display: flex;
         flex-direction: column;
@@ -75,7 +75,7 @@
         font-weight: 400;
         font-size: 14px;
         line-height: 16px;
-        color: @color-body;
+        color: var(--r-neutral-body, #3e495e);
       }
       &-extra {
         max-width: 230px;
@@ -86,7 +86,7 @@
       &-arrow {
         svg {
           path {
-            fill: @color-comment-1;
+            fill: var(--r-neutral-foot, #6a7587);
           }
         }
       }
@@ -102,13 +102,21 @@
         margin-right: 16px;
       }
       & > div:last-child {
-        border-bottom: 1px solid #e5e9ef;
-        border-bottom: 0.5px solid #e5e9ef;
+        border-bottom: 1px solid var(--r-neutral-line, #d3d8e0);
+        border-bottom: 0.5px solid var(--r-neutral-line, #d3d8e0);
       }
       &:last-child {
         div {
           border: none;
         }
+      }
+
+      .name-and-address .name {
+        color: var(--r-neutral-body, #3e495e);
+      }
+
+      .name-and-address .address {
+        color: var(--r-neutral-foot, #6a7587);
       }
     }
   }
@@ -119,7 +127,7 @@
     font-weight: 400;
     font-size: 14px;
     line-height: 20px;
-    color: @color-body;
+    color: var(--r-neutral-body, #d3d8e0);
     margin-bottom: 20px;
   }
 
@@ -155,5 +163,13 @@
       color: @color-body;
       margin-bottom: 28px;
     }
+  }
+}
+.whitelist-confirm-modal {
+  .ant-drawer-content {
+    background: var(--r-neutral-bg2, #f2f4f7) !important;
+  }
+  #password {
+    background-color: var(--r-neutral-card1, #fff) !important;
   }
 }

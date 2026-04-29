@@ -6,21 +6,94 @@ import { Popup } from '@/ui/component';
 import { ReactComponent as EmptySVG } from '@/ui/assets/dashboard/empty.svg';
 import { TokenTable } from './TokenTable';
 import { useCommonPopupView } from '@/ui/utils';
+import { useTranslation } from 'react-i18next';
+import { Button } from 'antd';
 
-export interface Props {
+interface TokenButtonPopupProps {
+  visible?: boolean;
+  onClose?: () => void;
   label: string;
-  onClickLink: () => void;
+  onClickButton?: () => void;
   tokens?: AbstractPortfolioToken[];
+  onClickLink?: () => void;
   linkText?: string;
+  buttonText?: string;
+  modalTitle?: string;
   description?: string;
   hiddenSubTitle?: boolean;
 }
+
+export function SpecialTokenListPopup({
+  visible,
+  onClose,
+  label,
+  tokens,
+  onClickLink,
+  linkText,
+  onClickButton,
+  buttonText,
+  description,
+  hiddenSubTitle,
+}: TokenButtonPopupProps) {
+  const { t } = useTranslation();
+  const len = tokens?.length ?? 0;
+
+  return (
+    <Popup
+      height={494}
+      visible={visible}
+      closable
+      push={false}
+      isNew
+      onClose={onClose}
+      title={`${len} ${label}`}
+      isSupportDarkMode
+    >
+      {!hiddenSubTitle && (
+        <div className="text-r-neutral-foot text-13 mb-[20px] text-center -m-8">
+          {t('page.dashboard.assets.tokenButton.subTitle')}
+        </div>
+      )}
+      <TokenTable
+        list={tokens}
+        EmptyComponent={
+          <div className="space-y-24 text-13 text-center mt-[100px]">
+            <EmptySVG className="w-[52px] h-[52px] m-auto" />
+            <div className="text-r-neutral-body">{description}</div>
+            {linkText && (
+              <div
+                onClick={onClickLink}
+                className="text-r-blue-default underline cursor-pointer"
+              >
+                {linkText}
+              </div>
+            )}
+            {buttonText && (
+              <Button
+                onClick={onClickButton}
+                type="primary"
+                className="w-[200px] h-[44px]"
+              >
+                {buttonText}
+              </Button>
+            )}
+          </div>
+        }
+      />
+    </Popup>
+  );
+}
+
+export type Props = TokenButtonPopupProps;
 
 export const TokenButton: React.FC<Props> = ({
   label,
   tokens,
   onClickLink,
   linkText,
+  modalTitle,
+  onClickButton,
+  buttonText,
   description,
   hiddenSubTitle,
 }) => {
@@ -30,8 +103,13 @@ export const TokenButton: React.FC<Props> = ({
 
   const handleClickLink = React.useCallback(() => {
     setVisible(false);
-    onClickLink();
-  }, []);
+    onClickLink?.();
+  }, [onClickLink]);
+
+  const handleClickButton = React.useCallback(() => {
+    setVisible(false);
+    onClickButton?.();
+  }, [onClickButton]);
 
   React.useEffect(() => {
     if (!commonPopupVisible) {
@@ -44,11 +122,11 @@ export const TokenButton: React.FC<Props> = ({
       <button
         onClick={() => setVisible(true)}
         className={clsx(
-          'rounded-[2px] py-6 px-8',
-          'text-12 bg-gray-bg text-black',
+          'rounded-[8px] py-8 px-12 border border-transparent',
+          'text-12 bg-r-neutral-card-1 text-r-neutral-body',
           'flex items-center',
           'gap-2',
-          'hover:opacity-60'
+          'hover:border-blue-light hover:bg-blue-light hover:bg-opacity-10'
         )}
       >
         <span>{len}</span>
@@ -56,35 +134,18 @@ export const TokenButton: React.FC<Props> = ({
         <LowValueArrowSVG className="w-14 h-14" />
       </button>
 
-      <Popup
-        height={494}
+      <SpecialTokenListPopup
         visible={visible}
-        closable
-        push={false}
         onClose={() => setVisible(false)}
-        title={`${len} ${label}`}
-      >
-        {!hiddenSubTitle && (
-          <div className="text-black text-13 mb-[30px] text-center -m-8">
-            The token in this list will not be added to total balance
-          </div>
-        )}
-        <TokenTable
-          list={tokens}
-          EmptyComponent={
-            <div className="space-y-24 text-13 text-center mt-[100px]">
-              <EmptySVG className="w-[52px] h-[52px] m-auto" />
-              <div className="text-gray-subTitle">{description}</div>
-              <div
-                onClick={handleClickLink}
-                className="text-blue-light underline cursor-pointer"
-              >
-                {linkText}
-              </div>
-            </div>
-          }
-        />
-      </Popup>
+        label={modalTitle || label}
+        tokens={tokens}
+        onClickLink={handleClickLink}
+        linkText={linkText}
+        onClickButton={handleClickButton}
+        buttonText={buttonText}
+        description={description}
+        hiddenSubTitle={hiddenSubTitle}
+      />
     </div>
   );
 };

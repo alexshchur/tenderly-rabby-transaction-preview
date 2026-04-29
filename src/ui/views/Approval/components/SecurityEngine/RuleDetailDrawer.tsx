@@ -5,6 +5,7 @@ import {
   Level,
 } from '@rabby-wallet/rabby-security-engine/dist/rules';
 import React, { useState, useEffect, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import { sortBy } from 'lodash';
 import { SecurityEngineLevelOrder } from 'consts';
@@ -24,7 +25,7 @@ const ThresholdWrapper = styled.div`
     font-weight: 700;
     font-size: 13px;
     line-height: 18px;
-    color: #13141a;
+    color: var(--r-neutral-title-1, #f7fafc);
     margin-left: 8px;
   }
   &.safe {
@@ -46,6 +47,7 @@ const ThresholdWrapper = styled.div`
 `;
 
 const ThresholdItem = ({ rule, level }: { rule: RuleConfig; level: Level }) => {
+  const { t } = useTranslation();
   const displayThreshold = useMemo(() => {
     const threshold = {
       ...rule.defaultThreshold,
@@ -115,7 +117,7 @@ const ThresholdItem = ({ rule, level }: { rule: RuleConfig; level: Level }) => {
       <SecurityLevel level={level} />
       {':'}
       <span className="threshold-display">
-        when the value is {displayThreshold}
+        {t('page.securityEngine.whenTheValueIs', { value: displayThreshold })}
       </span>
     </ThresholdWrapper>
   );
@@ -127,7 +129,7 @@ const RuleDetailDrawerWrapper = styled.div`
   height: 100%;
   left: 0;
   top: 0;
-  background-color: #fff;
+  background: var(--r-neutral-bg-1, #3d4251);
   transform: translateX(100%);
   transition: transform 0.3s;
   padding: 20px;
@@ -150,6 +152,7 @@ const RuleDetailDrawer = ({
   onCancel(): void;
 }) => {
   const [isVisible, setIsVisible] = useState(false);
+  const { t } = useTranslation();
 
   const handleCancel = () => {
     setIsVisible(false);
@@ -187,7 +190,7 @@ const RuleDetailDrawer = ({
       })}
     >
       <PageHeader forceShowBack onBack={handleCancel}>
-        View security rules
+        {t('page.securityEngine.viewRules')}
       </PageHeader>
       <div>
         {thresholds.map((threshold) => (

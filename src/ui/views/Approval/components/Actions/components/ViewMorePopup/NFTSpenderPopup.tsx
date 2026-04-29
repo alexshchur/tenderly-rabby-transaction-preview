@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Table, Col, Row } from '../Table';
 import * as Values from '../Values';
 import { Chain } from 'background/service/openapi';
@@ -12,13 +13,13 @@ interface NFTSpenderData {
     name: string;
     logo_url: string;
   } | null;
-  hasInteraction: boolean;
   bornAt: number | null;
   rank: number | null;
   riskExposure: number;
   isEOA: boolean;
   isDanger: boolean | null;
   isRevoke?: boolean;
+  hasInteraction: boolean;
 }
 
 export interface Props {
@@ -30,6 +31,8 @@ export interface NFTSpenderPopupProps extends Props {
 }
 
 export const NFTSpenderPopup: React.FC<Props> = ({ data }) => {
+  const { t } = useTranslation();
+
   const { contractBlacklist, contractWhitelist } = useRabbySelector((state) => {
     return state.securityEngine.userData;
   });
@@ -51,8 +54,10 @@ export const NFTSpenderPopup: React.FC<Props> = ({ data }) => {
   return (
     <div>
       <div className="title">
-        {data.isRevoke ? 'Revoke from' : 'Approve to'}{' '}
-        <Values.Address
+        {data.isRevoke
+          ? t('page.signTx.revokeTokenApprove.revokeFrom')
+          : t('page.signTx.tokenApprove.approveTo')}{' '}
+        <Values.AddressWithCopy
           address={data.spender}
           chain={data.chain}
           iconWidth="14px"
@@ -60,29 +65,28 @@ export const NFTSpenderPopup: React.FC<Props> = ({ data }) => {
       </div>
       <Table className="view-more-table">
         <Col>
-          <Row className="bg-[#F6F8FF]">Protocol</Row>
+          <Row>{t('page.signTx.protocolTitle')}</Row>
           <Row>
             <Values.Protocol value={data.protocol} />
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Address type</Row>
+          <Row>{t('page.signTx.addressTypeTitle')}</Row>
           <Row>{data.isEOA ? 'EOA' : 'Contract'}</Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">
-            {data.isEOA ? 'First on-chain' : 'Deployed time'}
+          <Row>
+            {data.isEOA
+              ? t('page.signTx.firstOnChain')
+              : t('page.signTx.deployTimeTitle')}
           </Row>
           <Row>
             <Values.TimeSpan value={data.bornAt} />
           </Row>
         </Col>
         <Col>
-          <Row
-            tip="Trust value refers to the top NFT approved and exposed to this contract. A low trust value indicates either risk or inactivity for 180 days."
-            className="bg-[#F6F8FF]"
-          >
-            Trust value
+          <Row tip={t('page.signTx.nftApprove.nftContractTrustValueTip')}>
+            {t('page.signTx.trustValue')}
           </Row>
           <Row>
             {data.riskExposure === null ? (
@@ -93,23 +97,30 @@ export const NFTSpenderPopup: React.FC<Props> = ({ data }) => {
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Popularity</Row>
-          <Row>{data.rank ? `No.${data.rank} on ${data.chain.name}` : '-'}</Row>
+          <Row>{t('page.signTx.popularity')}</Row>
+          <Row>
+            {data.rank
+              ? t('page.signTx.contractPopularity', [
+                  data.rank,
+                  data.chain.name,
+                ])
+              : '-'}
+          </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Interacted before</Row>
+          <Row>{t('page.signTx.interacted')}</Row>
           <Row>
             <Values.Boolean value={data.hasInteraction} />
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">Address note</Row>
+          <Row>{t('page.signTx.addressNote')}</Row>
           <Row>
             <Values.AddressMemo address={data.spender} />
           </Row>
         </Col>
         <Col>
-          <Row className="bg-[#F6F8FF]">My mark</Row>
+          <Row>{t('page.signTx.myMark')}</Row>
           <Row>
             <Values.AddressMark
               isContract
@@ -123,7 +134,7 @@ export const NFTSpenderPopup: React.FC<Props> = ({ data }) => {
         </Col>
         {data.isDanger && (
           <Col>
-            <Row className="bg-[#F6F8FF]">Flagged by Rabby</Row>
+            <Row>{t('page.signTx.tokenApprove.flagByRabby')}</Row>
             <Row>
               <Values.Boolean value={!!data.isDanger} />
             </Row>

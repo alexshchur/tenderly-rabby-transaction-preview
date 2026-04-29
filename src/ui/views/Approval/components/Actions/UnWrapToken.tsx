@@ -1,18 +1,23 @@
 import React, { useMemo, useEffect } from 'react';
 import styled from 'styled-components';
 import { Result } from '@rabby-wallet/rabby-security-engine';
+import { useTranslation } from 'react-i18next';
 import { Table, Col, Row } from './components/Table';
 import LogoWithText from './components/LogoWithText';
 import * as Values from './components/Values';
-import { ParsedActionData, WrapTokenRequireData } from './utils';
+import {
+  WrapTokenRequireData,
+  ParsedTransactionActionData,
+} from '@rabby-wallet/rabby-action';
 import { formatAmount } from 'ui/utils/number';
-import { ellipsisTokenSymbol, getTokenSymbol } from 'ui/utils/token';
 import { Chain } from 'background/service/openapi';
 import SecurityLevelTagNoText from '../SecurityEngine/SecurityLevelTagNoText';
 import ViewMore from './components/ViewMore';
 import { useRabbyDispatch, useRabbySelector } from '@/ui/store';
 import { SecurityListItem } from './components/SecurityListItem';
 import { isSameAddress } from '@/ui/utils';
+import { ProtocolListItem } from './components/ProtocolListItem';
+import { SubTable, SubCol, SubRow } from './components/SubTable';
 
 const Wrapper = styled.div`
   .header {
@@ -39,7 +44,7 @@ const UnWrapToken = ({
   chain,
   engineResults,
 }: {
-  data: ParsedActionData['wrapToken'];
+  data: ParsedTransactionActionData['wrapToken'];
   requireData: WrapTokenRequireData;
   chain: Chain;
   engineResults: Result[];
@@ -55,6 +60,7 @@ const UnWrapToken = ({
   );
 
   const dispatch = useRabbyDispatch();
+  const { t } = useTranslation();
 
   const isInWhitelist = useMemo(() => {
     return contractWhitelist.some(
@@ -84,15 +90,17 @@ const UnWrapToken = ({
     });
   };
 
-  useEffect(() => {
-    dispatch.securityEngine.init();
-  }, []);
+  const hasReceiver = useMemo(() => {
+    return !isSameAddress(receiver, requireData.sender);
+  }, [requireData, receiver]);
+
+  const hasRequiredData = requireData && Object.keys(requireData).length > 0;
 
   return (
     <Wrapper>
       <Table>
         <Col>
-          <Row isTitle>Pay</Row>
+          <Row isTitle>{t('page.signTx.swap.payToken')}</Row>
           <Row>
             <LogoWithText
               logo={payToken.logo_url}
@@ -107,7 +115,7 @@ const UnWrapToken = ({
           </Row>
         </Col>
         <Col>
-          <Row isTitle>Receive</Row>
+          <Row isTitle>{t('page.signTx.swap.receiveToken')}</Row>
           <Row>
             <LogoWithText
               logo={receiveToken.logo_url}
@@ -132,66 +140,106 @@ const UnWrapToken = ({
             )}
           </Row>
         </Col>
-        {engineResultMap['1093'] && (
-          <Col>
-            <Row isTitle>Receiver</Row>
-            <Row>
-              <Values.Address address={receiver} chain={chain} />
-              <ul className="desc-list">
-                <SecurityListItem
-                  engineResult={engineResultMap['1093']}
-                  id="1093"
-                  dangerText="Not the payment address"
+        {hasReceiver && (
+          <>
+            <Col>
+              <Row isTitle>{t('page.signTx.swap.receiver')}</Row>
+              <Row>
+                <Values.AddressWithCopy
+                  id="unwrap-token-receiver"
+                  address={receiver}
+                  chain={chain}
                 />
-              </ul>
-            </Row>
-          </Col>
-        )}
-        <Col>
-          <Row isTitle>Interact contract</Row>
-          <Row>
-            <div>
-              <Values.Address address={requireData.id} chain={chain} />
-            </div>
-            <ul className="desc-list">
-              {requireData.protocol && (
-                <li>
-                  <Values.Protocol value={requireData.protocol} />
-                </li>
+              </Row>
+            </Col>
+            <SubTable target="unwrap-token-receiver">
+              <SecurityListItem
+                engineResult={engineResultMap['1093']}
+                id="1093"
+                warningText={t('page.signTx.swap.unknownAddress')}
+              />
+              {!engineResultMap['1093'] && (
+                <>
+                  <SubCol>
+                    <SubRow isTitle>{t('page.signTx.address')}</SubRow>
+                    <SubRow>
+                      <Values.AccountAlias address={receiver} />
+                    </SubRow>
+                  </SubCol>
+                  <SubCol>
+                    <SubRow isTitle>{t('page.addressDetail.source')}</SubRow>
+                    <SubRow>
+                      <Values.KnownAddress address={receiver} />
+                    </SubRow>
+                  </SubCol>
+                </>
               )}
-              <li>
-                <Values.Interacted value={requireData.hasInteraction} />
-              </li>
-
-              {isInWhitelist && <li>Marked as trusted</li>}
+            </SubTable>
+          </>
+        )}
+        {hasRequiredData && (
+          <>
+            <Col>
+              <Row isTitle itemsCenter>
+                {t('page.signTx.interactContract')}
+              </Row>
+              <Row>
+                <ViewMore
+                  type="contract"
+                  data={{
+                    bornAt: requireData.bornAt,
+                    protocol: requireData.protocol,
+                    rank: requireData.rank,
+                    address: requireData.id,
+                    hasInteraction: requireData.hasInteraction,
+                    chain,
+                  }}
+                >
+                  <Values.Address
+                    id="unwrap-token-address"
+                    hasHover
+                    address={requireData.id}
+                    chain={chain}
+                  />
+                </ViewMore>
+              </Row>
+            </Col>
+            <SubTable target="unwrap-token-address">
+              <SubCol>
+                <SubRow isTitle>{t('page.signTx.protocol')}</SubRow>
+                <SubRow>
+                  <ProtocolListItem protocol={requireData.protocol} />
+                </SubRow>
+              </SubCol>
+              <SubCol>
+                <SubRow isTitle>{t('page.signTx.hasInteraction')}</SubRow>
+                <SubRow>
+                  <Values.Interacted value={requireData.hasInteraction} />
+                </SubRow>
+              </SubCol>
+              {isInWhitelist && (
+                <SubCol>
+                  <SubRow isTitle>{t('page.signTx.myMark')}</SubRow>
+                  <SubRow>{t('page.signTx.trusted')}</SubRow>
+                </SubCol>
+              )}
 
               <SecurityListItem
                 id="1135"
                 engineResult={engineResultMap['1135']}
-                forbiddenText="Marked as blocked"
+                forbiddenText={t('page.signTx.markAsBlock')}
+                title={t('page.signTx.myMark')}
               />
 
               <SecurityListItem
                 id="1137"
                 engineResult={engineResultMap['1137']}
-                warningText="Marked as blocked"
+                warningText={t('page.signTx.markAsBlock')}
+                title={t('page.signTx.myMark')}
               />
-              <li>
-                <ViewMore
-                  type="contract"
-                  data={{
-                    hasInteraction: requireData.hasInteraction,
-                    bornAt: requireData.bornAt,
-                    protocol: requireData.protocol,
-                    rank: requireData.rank,
-                    address: requireData.id,
-                    chain,
-                  }}
-                />
-              </li>
-            </ul>
-          </Row>
-        </Col>
+            </SubTable>
+          </>
+        )}
       </Table>
     </Wrapper>
   );

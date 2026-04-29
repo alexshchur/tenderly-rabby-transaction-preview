@@ -1,6 +1,6 @@
-export { default as IconFileJson } from './file-json.svg';
+export { ReactComponent as RcIconFileJson } from './file-json.svg';
 export { default as IconImportSuccess } from './import-success.svg';
-export { default as IconUploader } from './uploader.svg';
+export { ReactComponent as RcIconUploader } from './uploader.svg';
 export { default as IconChecked } from './checked.svg';
 export { default as IconNotChecked } from './not-checked.svg';
 export { default as QrScan } from './qr-scan.svg';
@@ -15,6 +15,11 @@ export { ReactComponent as SvgIconCross } from './cross.svg';
 export { ReactComponent as SvgIconPlusPrimary } from './plus-primary.svg';
 export { ReactComponent as SvgIconSpin } from './spin.svg';
 export { ReactComponent as SvgIconOffline } from './offline.svg';
+
+export { ReactComponent as SvgIcPending } from './IcPending.svg';
+export { ReactComponent as SvgIcSuccess } from './IcSuccess.svg';
+export { ReactComponent as SvgIcWarning } from './IcWarning.svg';
+
 export { ReactComponent as ImportLedgerIcon } from './import-ledger.svg';
 export { ReactComponent as SvgIconBitBox02 } from './icon-bitbox02.svg';
 export { ReactComponent as SvgIconLedger } from './ledger.svg';
@@ -42,3 +47,5 @@ export { default as IconContract } from 'ui/assets/icon-contract.svg';
 export { default as IconContractDeploy } from 'ui/assets/icon-contract-deploy.svg';
 export { default as IconApproval } from 'ui/assets/icon-approval.svg';
 export { default as IconCancel } from 'ui/assets/icon-cancel.svg';
+
+export { default as IconOpenSea } from 'ui/assets/opensea.png';

@@ -1,61 +1,69 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useHistory, useLocation } from 'react-router-dom';
-import { VariableSizeList as VList } from 'react-window';
+import { VariableSizeList as VList, ListOnScrollProps } from 'react-window';
 import { PageHeader } from 'ui/component';
 import AddressItem from './AddressItem';
-import IconPinned from 'ui/assets/icon-pinned.svg';
-import IconPinnedFill from 'ui/assets/icon-pinned-fill.svg';
-import IconSearch from 'ui/assets/search.svg';
+import { ReactComponent as RcIconPinned } from 'ui/assets/icon-pinned.svg';
+import { ReactComponent as RcIconPinnedFill } from 'ui/assets/icon-pinned-fill.svg';
 
 import './style.less';
 import { obj2query } from '@/ui/utils/url';
 import { useRabbyDispatch, useRabbySelector } from '@/ui/store';
-import { sortAccountsByBalance } from '@/ui/utils/account';
 import clsx from 'clsx';
-import { ReactComponent as IconAddAddress } from '@/ui/assets/address/new-address.svg';
-import { ReactComponent as IconRefresh } from '@/ui/assets/address/refresh.svg';
-import { ReactComponent as IconLoading } from '@/ui/assets/address/loading.svg';
-import { ReactComponent as IconRight } from '@/ui/assets/address/right.svg';
+import { ReactComponent as RcIconAddAddress } from '@/ui/assets/address/new-address.svg';
+import { ReactComponent as RcIconRight } from '@/ui/assets/address/right.svg';
+import { ReactComponent as RcNoMatchedAddress } from '@/ui/assets/address/no-matched-addr.svg';
 
-import { groupBy } from 'lodash';
-import { KEYRING_CLASS } from '@/constant';
-import { Input, Tooltip } from 'antd';
-import { useRequest } from 'ahooks';
+import { EVENTS, KEYRING_CLASS } from '@/constant';
+import { useDebounceFn, useRequest } from 'ahooks';
 import { SessionStatusBar } from '@/ui/component/WalletConnect/SessionStatusBar';
 import { LedgerStatusBar } from '@/ui/component/ConnectStatus/LedgerStatusBar';
 import { GridPlusStatusBar } from '@/ui/component/ConnectStatus/GridPlusStatusBar';
-import useDebounceValue from '@/ui/hooks/useDebounceValue';
-import LessPalette from '@/ui/style/var-defs';
+import useSyncStaleValue from '@/ui/hooks/useDebounceValue';
+// import { AddressSortIconMapping, AddressSortPopup } from './SortPopup';
+import { IDisplayedAccountWithBalance } from '@/ui/models/accountToDisplay';
+import { SortInput } from './SortInput';
+import ThemeIcon from '@/ui/component/ThemeMode/ThemeIcon';
+import { KeystoneStatusBar } from '@/ui/component/ConnectStatus/KeystoneStatusBar';
+import dayjs from 'dayjs';
+import { useAccounts } from '@/ui/hooks/useAccounts';
+import { useWallet } from '@/ui/utils';
+import { useCheckSeedPhraseBackup } from '@/ui/utils/useCheckSeedPhraseBackup';
+import { useEnterPassphraseModal } from '@/ui/hooks/useEnterPassphraseModal';
+import AuthenticationModal from '@/ui/component/AuthenticationModal';
+import { UI_TYPE } from '@/constant/ui';
+import { ReactComponent as RcIconArrowRight14 } from '@/ui/assets/address/arrow-right-14.svg';
+import { useMemoizedFn } from 'ahooks';
+import browser from 'webextension-polyfill';
 
 function NoAddressUI() {
   const { t } = useTranslation();
 
   return (
-    <div className="no-address">
-      <img
-        className="no-data-image"
-        src="/images/nodata-address.png"
-        alt="no address"
+    <div className="no-address pt-[90px]">
+      <ThemeIcon
+        className="no-data-image w-[52px] h-[52px]"
+        src={RcNoMatchedAddress}
       />
-      <p className="text-gray-content text-14">{t('NoAddress')}</p>
+      <p className="text-14 text-r-neutral-body mt-[24px]">
+        {t('page.manageAddress.no-address')}
+      </p>
     </div>
   );
 }
 
 function NoSearchedAddressUI() {
+  const { t } = useTranslation();
+
   return (
     <div className="no-matched-address">
-      <img
+      <ThemeIcon
         className="no-data-image w-[52px] h-[52px]"
-        src="/images/no-matched-addr.svg"
-        alt="no address"
+        src={RcNoMatchedAddress}
       />
-      <p
-        className="text-14 mt-[24px]"
-        style={{ color: LessPalette['@color-body'] }}
-      >
-        No match
+      <p className="text-14 text-r-neutral-body mt-[24px]">
+        {t('page.manageAddress.no-match')}
       </p>
     </div>
   );
@@ -66,54 +74,23 @@ const AddressManagement = () => {
   const history = useHistory();
   const location = useLocation();
   const enableSwitch = location.pathname === '/switch-address';
+  const dispatch = useRabbyDispatch();
 
-  // todo: store redesign
   const {
+    sortedAccountsList,
+    watchSortedAccountsList,
+    addressSortStore,
     accountsList,
-    highlightedAddresses = [],
+    highlightedAddresses,
+    fetchAllAccounts,
     loadingAccounts,
-  } = useRabbySelector((s) => ({
-    ...s.accountToDisplay,
-    highlightedAddresses: s.addressManagement.highlightedAddresses,
-  }));
-
-  const [sortedAccountsList, watchSortedAccountsList] = React.useMemo(() => {
-    const restAccounts = [...accountsList];
-    let highlightedAccounts: typeof accountsList = [];
-    let watchModeHighlightedAccounts: typeof accountsList = [];
-
-    highlightedAddresses.forEach((highlighted) => {
-      const idx = restAccounts.findIndex(
-        (account) =>
-          account.address === highlighted.address &&
-          account.brandName === highlighted.brandName
-      );
-      if (idx > -1) {
-        if (restAccounts[idx].type === KEYRING_CLASS.WATCH) {
-          watchModeHighlightedAccounts.push(restAccounts[idx]);
-        } else {
-          highlightedAccounts.push(restAccounts[idx]);
-        }
-        restAccounts.splice(idx, 1);
-      }
-    });
-    const data = groupBy(restAccounts, (e) =>
-      e.type === KEYRING_CLASS.WATCH ? '1' : '0'
-    );
-
-    highlightedAccounts = sortAccountsByBalance(highlightedAccounts);
-    watchModeHighlightedAccounts = sortAccountsByBalance(
-      watchModeHighlightedAccounts
-    );
-
-    return [
-      highlightedAccounts.concat(data['0'] || []).filter((e) => !!e),
-      watchModeHighlightedAccounts.concat(data['1'] || []).filter((e) => !!e),
-    ];
-  }, [accountsList, highlightedAddresses]);
-
-  const [searchKeyword, setSearchKeyword] = React.useState('');
-  const debouncedSearchKeyword = useDebounceValue(searchKeyword, 250);
+    allSortedAccountList,
+  } = useAccounts();
+  const [searchKeyword, setSearchKeyword] = React.useState(
+    addressSortStore?.search || ''
+  );
+  const debouncedSearchKeyword = useSyncStaleValue(searchKeyword, 250);
+  const wallet = useWallet();
 
   const {
     accountList,
@@ -122,35 +99,59 @@ const AddressManagement = () => {
     noAnySearchedAccount,
   } = useMemo(() => {
     const result = {
-      accountList: [
-        ...(sortedAccountsList || []),
-        ...(watchSortedAccountsList || []),
-      ],
+      accountList: allSortedAccountList,
       filteredAccounts: [] as typeof sortedAccountsList,
       noAnyAccount: false,
       noAnySearchedAccount: false,
     };
+
     result.filteredAccounts = [...result.accountList];
+    if (addressSortStore.sortType === 'addressType') {
+      result.filteredAccounts = sortedAccountsList;
+    }
 
     if (debouncedSearchKeyword) {
       const lKeyword = debouncedSearchKeyword.toLowerCase();
 
-      result.filteredAccounts = result.accountList.filter((account) => {
-        const lowerAddress = account.address.toLowerCase();
-        const aliasName = account.alianName?.toLowerCase();
-        let addrIncludeKw = false;
-        if (lKeyword.replace(/^0x/, '').length >= 2) {
-          addrIncludeKw = account.address
-            .toLowerCase()
-            .includes(lKeyword.toLowerCase());
-        }
+      if (addressSortStore.sortType === 'addressType') {
+        result.filteredAccounts = (result.filteredAccounts as IDisplayedAccountWithBalance[][])
+          .map((group) =>
+            group.filter((account) => {
+              const lowerAddress = account.address.toLowerCase();
+              const aliasName = account.alianName?.toLowerCase();
+              let addrIncludeKw = false;
+              if (lKeyword.replace(/^0x/, '').length >= 2) {
+                addrIncludeKw = account.address
+                  .toLowerCase()
+                  .includes(lKeyword.toLowerCase());
+              }
 
-        return (
-          lowerAddress === lKeyword ||
-          aliasName?.includes(lKeyword) ||
-          addrIncludeKw
-        );
-      });
+              return (
+                lowerAddress === lKeyword ||
+                aliasName?.includes(lKeyword) ||
+                addrIncludeKw
+              );
+            })
+          )
+          .filter((group) => group.length > 0);
+      } else {
+        result.filteredAccounts = result.accountList.filter((account) => {
+          const lowerAddress = account.address.toLowerCase();
+          const aliasName = account.alianName?.toLowerCase();
+          let addrIncludeKw = false;
+          if (lKeyword.replace(/^0x/, '').length >= 2) {
+            addrIncludeKw = account.address
+              .toLowerCase()
+              .includes(lKeyword.toLowerCase());
+          }
+
+          return (
+            lowerAddress === lKeyword ||
+            aliasName?.includes(lKeyword) ||
+            addrIncludeKw
+          );
+        });
+      }
     }
 
     result.noAnyAccount = result.accountList.length <= 0 && !loadingAccounts;
@@ -158,14 +159,15 @@ const AddressManagement = () => {
       result.filteredAccounts.length <= 0 && !loadingAccounts;
 
     return result;
-  }, [sortedAccountsList, watchSortedAccountsList, debouncedSearchKeyword]);
-
-  const dispatch = useRabbyDispatch();
+  }, [
+    sortedAccountsList,
+    watchSortedAccountsList,
+    debouncedSearchKeyword,
+    addressSortStore.sortType,
+  ]);
 
   useEffect(() => {
-    dispatch.addressManagement.getHilightedAddressesAsync().then(() => {
-      dispatch.accountToDisplay.getAllAccountsToDisplay();
-    });
+    fetchAllAccounts();
   }, []);
 
   const {
@@ -180,6 +182,56 @@ const AddressManagement = () => {
 
   const currentAccount = useRabbySelector((s) => s.account.currentAccount);
 
+  const { hasBackup } = useCheckSeedPhraseBackup(
+    currentAccount?.address || '',
+    {
+      refreshOnWindowFocus: true,
+    }
+  );
+
+  const invokeEnterPassphrase = useEnterPassphraseModal('address');
+
+  const handleBackupSeedPhrase = useMemoizedFn(async () => {
+    const address = currentAccount?.address;
+    if (!address) return;
+
+    let data = '';
+    if (UI_TYPE.isDesktop) {
+      await wallet.setPageStateCache({
+        path: '/switch-address',
+        params: {
+          action: 'address-backup',
+          backupType: 'mneonics',
+        },
+        states: {
+          action: 'address-backup',
+        },
+      });
+      browser.action.openPopup();
+    } else {
+      await AuthenticationModal({
+        confirmText: t('global.confirm'),
+        cancelText: t('global.Cancel'),
+        title: t('page.addressDetail.backup-seed-phrase'),
+        validationHandler: async (password: string) => {
+          await invokeEnterPassphrase(address);
+          data = await wallet.getMnemonics(password, address);
+        },
+        onFinished() {
+          history.push({
+            pathname: '/settings/address-backup/mneonics',
+            state: {
+              data: data,
+              goBack: true,
+            },
+          });
+        },
+        onCancel() {},
+        wallet,
+      });
+    }
+  });
+
   const currentAccountIndex = useMemo(() => {
     if (!currentAccount || !enableSwitch) {
       return -1;
@@ -191,130 +243,256 @@ const AddressManagement = () => {
     );
   }, [accountList, currentAccount, enableSwitch]);
 
-  const gotoAddAddress = () => {
+  const gotoAddAddress = useCallback(() => {
     history.push('/add-address');
-  };
+  }, []);
 
-  const gotoManageAddress = () => {
-    history.push('/settings/address');
-  };
+  const gotoManageAddress = useCallback(() => {
+    history.push('/settings/address?back=true');
+  }, []);
 
-  const switchAccount = async (account: typeof sortedAccountsList[number]) => {
-    await dispatch.account.changeAccountAsync(account);
-    history.push('/dashboard');
-  };
+  const switchAccount = useCallback(
+    async (account: typeof accountsList[number]) => {
+      await dispatch.account.changeAccountAsync(account);
+      history.push('/dashboard');
+    },
+    [dispatch?.account?.changeAccountAsync]
+  );
 
   useEffect(() => {
     dispatch.whitelist.init();
   }, []);
 
-  const Row = (props) => {
-    const { data, index, style } = props;
-    const account = data[index];
-    const favorited = highlightedAddresses.some(
-      (highlighted) =>
-        account.address === highlighted.address &&
-        account.brandName === highlighted.brandName
-    );
-
+  const AddNewAddressColumn = useMemo(() => {
     return (
-      <div className="address-wrap-with-padding px-[20px]" style={style}>
-        <AddressItem
-          balance={account.balance}
-          address={account.address}
-          type={account.type}
-          brandName={account.brandName}
-          alias={account.alianName}
-          isUpdatingBalance={isUpdateAllBalanceLoading}
-          extra={
-            <div
-              className={clsx(
-                'icon-star  border-none px-0',
-                favorited ? 'is-active' : 'opacity-0 group-hover:opacity-100'
-              )}
-              onClick={(e) => {
-                e.stopPropagation();
-                dispatch.addressManagement.toggleHighlightedAddressAsync({
-                  address: account.address,
-                  brandName: account.brandName,
-                });
-              }}
-            >
-              <img
-                className="w-[13px] h-[13px]"
-                src={favorited ? IconPinnedFill : IconPinned}
-                alt=""
-              />
-            </div>
-          }
-          onClick={() => {
-            history.push(
-              `/settings/address-detail?${obj2query({
-                address: account.address,
-                type: account.type,
-                brandName: account.brandName,
-                byImport: account.byImport || '',
-              })}`
-            );
-          }}
-          onSwitchCurrentAccount={() => {
-            switchAccount(account);
-          }}
-          enableSwitch={enableSwitch}
+      <div
+        onClick={gotoAddAddress}
+        className="mt-24 h-[52px] flex items-center justify-center gap-[8px] bg-r-neutral-card-1 rounded-lg cursor-pointer"
+      >
+        <RcIconAddAddress
+          viewBox="0 0 20 20"
+          className={clsx('text-r-blue-default w-[20px] h-[20px] ')}
         />
+
+        <span className="text-13 text-r-blue-default font-medium">
+          {t('page.manageAddress.addNewAddress')}
+        </span>
       </div>
     );
-  };
+  }, [gotoAddAddress]);
+
+  const Row = useCallback(
+    (
+      props: any //ListChildComponentProps<typeof accountsList[] | typeof accountsList>
+    ) => {
+      const { data, index, style } = props;
+      const account = data[index];
+
+      const render = (
+        account: typeof accountsList[number],
+        isGroup = false
+      ) => {
+        const favorited = highlightedAddresses.some(
+          (highlighted) =>
+            account.address === highlighted.address &&
+            account.brandName === highlighted.brandName
+        );
+
+        return (
+          <>
+            <div
+              className={clsx(
+                'address-wrap-with-padding px-[20px]',
+                isGroup && 'row-group'
+              )}
+              style={!isGroup ? style : undefined}
+              key={account.address}
+            >
+              <AddressItem
+                balance={account.balance}
+                address={account.address}
+                type={account.type}
+                brandName={account.brandName}
+                alias={account.alianName}
+                isUpdatingBalance={isUpdateAllBalanceLoading}
+                extra={
+                  <div
+                    className={clsx(
+                      'icon-star border-none px-0',
+                      favorited
+                        ? 'is-active'
+                        : 'opacity-0 group-hover:opacity-100'
+                    )}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      dispatch.addressManagement.toggleHighlightedAddressAsync({
+                        address: account.address,
+                        brandName: account.brandName,
+                      });
+                      wallet.emitEvent(EVENTS.RELOAD_ACCOUNT_LIST);
+                    }}
+                  >
+                    <ThemeIcon
+                      className="w-[13px] h-[13px]"
+                      src={favorited ? RcIconPinnedFill : RcIconPinned}
+                    />
+                  </div>
+                }
+                onClick={() => {
+                  history.push(
+                    `/settings/address-detail?${obj2query({
+                      address: account.address,
+                      type: account.type,
+                      brandName: account.brandName,
+                      //@ts-expect-error byImport is boolean
+                      byImport: account.byImport || '',
+                    })}`
+                  );
+                }}
+                onSwitchCurrentAccount={() => {
+                  switchAccount(account);
+                }}
+                enableSwitch={enableSwitch}
+              />
+
+              {!isGroup && index === data.length - 1
+                ? AddNewAddressColumn
+                : null}
+            </div>
+          </>
+        );
+      };
+
+      if (addressSortStore.sortType === 'addressType') {
+        return (
+          <div style={style} className="address-type-container">
+            {(account as typeof accountsList)?.map((e) => render(e, true))}
+            {index === data.length - 1 ? (
+              <div className="mx-20">{AddNewAddressColumn}</div>
+            ) : null}
+          </div>
+        );
+      }
+
+      return render(account as typeof accountsList[number]);
+    },
+    [
+      highlightedAddresses,
+      isUpdateAllBalanceLoading,
+      switchAccount,
+      addressSortStore?.sortType,
+      dispatch?.addressManagement?.toggleHighlightedAddressAsync,
+    ]
+  );
 
   const isWalletConnect =
     accountList[currentAccountIndex]?.type === KEYRING_CLASS.WALLETCONNECT;
   const isLedger =
     accountList[currentAccountIndex]?.type === KEYRING_CLASS.HARDWARE.LEDGER;
+  const isKeystone = accountList[currentAccountIndex]?.brandName === 'Keystone';
   const isGridPlus =
     accountList[currentAccountIndex]?.type === KEYRING_CLASS.HARDWARE.GRIDPLUS;
-  const hasStatusBar = isWalletConnect || isLedger || isGridPlus;
+  const isCoinbase =
+    accountList[currentAccountIndex]?.type === KEYRING_CLASS.Coinbase;
+  const hasStatusBar = isWalletConnect || isLedger || isGridPlus || isCoinbase;
+  const showBackupWarning =
+    currentAccountIndex !== -1 &&
+    accountList[currentAccountIndex]?.type === KEYRING_CLASS.MNEMONIC &&
+    !hasBackup;
+
+  useEffect(() => {
+    dispatch.preference.setAddressSortStoreValue({
+      key: 'search',
+      value: searchKeyword,
+    });
+  }, [searchKeyword]);
+
+  const listRef = useRef<
+    VList<IDisplayedAccountWithBalance[] | IDisplayedAccountWithBalance[][]>
+  >(null);
+
+  const { run: handleScroll } = useDebounceFn(
+    (p: ListOnScrollProps) => {
+      dispatch.preference.setAddressSortStoreValue({
+        key: 'lastScrollOffset',
+        value: p.scrollOffset,
+      });
+    },
+    {
+      wait: 500,
+    }
+  );
+
+  useEffect(() => {
+    if (
+      addressSortStore.lastCurrentRecordTime &&
+      dayjs().isAfter(
+        dayjs.unix(addressSortStore.lastCurrentRecordTime).add(15, 'minute')
+      )
+    ) {
+      setSearchKeyword('');
+      return () => {
+        dispatch.preference.setAddressSortStoreValue({
+          key: 'lastCurrentRecordTime',
+          value: dayjs().unix(),
+        });
+      };
+    }
+
+    if (
+      addressSortStore.lastCurrentRecordTime &&
+      addressSortStore.lastScrollOffset &&
+      filteredAccounts?.length
+    ) {
+      listRef.current?.scrollTo(addressSortStore.lastScrollOffset);
+
+      return () => {
+        dispatch.preference.setAddressSortStoreValue({
+          key: 'lastCurrentRecordTime',
+          value: dayjs().unix(),
+        });
+      };
+    }
+  }, []);
+
+  const getItemSize = React.useCallback(
+    (i: number) => {
+      const lastAddAddrBtn = 52 + 24;
+      const lastPadding =
+        i === filteredAccounts.length - 1 ? 24 + lastAddAddrBtn : 0;
+      if (addressSortStore.sortType === 'addressType') {
+        return (
+          52 * (filteredAccounts as typeof accountsList[])[i].length +
+          16 +
+          lastPadding
+        );
+      }
+
+      return lastPadding + (i !== sortedAccountsList.length - 1 ? 60 : 76);
+    },
+    [filteredAccounts, sortedAccountsList, addressSortStore.sortType]
+  );
+
+  useEffect(() => {
+    listRef.current?.resetAfterIndex(0);
+  }, [accountsList.length]);
 
   return (
     <div className="page-address-management px-0 overflow-hidden">
       <PageHeader className="pt-[24px] mx-[20px]">
-        {enableSwitch ? 'Current Address' : t('Address Management')}
-        <div className="absolute top-24 right-[42px]">
-          <IconAddAddress
+        {enableSwitch
+          ? t('page.manageAddress.current-address')
+          : t('page.manageAddress.address-management')}
+        <div className="bg-r-neutral-card1 rounded absolute top-20 right-0 w-[32px] h-[28px] flex items-center justify-center">
+          <RcIconAddAddress
             viewBox="0 0 20 20"
-            className={clsx('text-gray-title w-[20px] h-[20px] cursor-pointer')}
+            className={clsx(
+              'text-r-blue-default w-[20px] h-[20px] cursor-pointer'
+            )}
             onClick={gotoAddAddress}
           />
         </div>
-        <Tooltip
-          title="Update balance data"
-          overlayClassName="rectangle"
-          placement="left"
-        >
-          <div className="absolute right-0 top-[24px]">
-            {isUpdateAllBalanceLoading ? (
-              <div className="w-[20px] h-[20px] flex items-center justify-center">
-                <IconLoading
-                  viewBox="0 0 20 20"
-                  className="text-gray-title w-[16px] h-[16px] cursor-pointer"
-                />
-              </div>
-            ) : (
-              <IconRefresh
-                className={clsx(
-                  'text-gray-title w-[20px] h-[20px] cursor-pointer'
-                )}
-                onClick={() => {
-                  if (isUpdateAllBalanceLoading) {
-                    return;
-                  }
-                  handleUpdateAllBalance();
-                }}
-              />
-            )}
-          </div>
-        </Tooltip>
       </PageHeader>
-
       {currentAccountIndex !== -1 && accountList[currentAccountIndex] && (
         <>
           <div className="address-wrap-with-padding px-[20px]">
@@ -344,37 +522,62 @@ const AddressManagement = () => {
                   address={accountList[currentAccountIndex].address || ''}
                   brandName={accountList[currentAccountIndex].brandName || ''}
                   className="m-[16px] mt-0 text-white bg-[#0000001A]"
+                  type={accountList[currentAccountIndex].type}
                 />
               )}
               {isLedger && (
                 <LedgerStatusBar className="m-[16px] mt-0 text-white bg-[#0000001A]" />
               )}
+              {isKeystone && (
+                <KeystoneStatusBar className="m-[16px] mt-0 text-white bg-[#0000001A]" />
+              )}
               {isGridPlus && (
                 <GridPlusStatusBar className="m-[16px] mt-0 text-white bg-[#0000001A]" />
               )}
+              {isCoinbase && (
+                <SessionStatusBar
+                  address={accountList[currentAccountIndex].address || ''}
+                  brandName={KEYRING_CLASS.Coinbase}
+                  className="m-[16px] mt-0 text-white bg-[#0000001A]"
+                  type={KEYRING_CLASS.Coinbase}
+                />
+              )}
+              {accountList[currentAccountIndex]?.type ===
+                KEYRING_CLASS.MNEMONIC &&
+                !hasBackup && (
+                  <div
+                    className="mx-[16px] mb-[16px] px-[8px] h-[28px] bg-[rgba(0,0,0,0.1)] rounded-[4px] flex items-center cursor-pointer"
+                    onClick={handleBackupSeedPhrase}
+                  >
+                    <div className="w-[6px] h-[6px] rounded-full bg-r-orange-default flex-shrink-0" />
+                    <span className="text-13 text-r-orange-default font-medium flex-1 ml-[4px]">
+                      {t('page.manageAddress.seedPhraseNotBackedUp')}
+                    </span>
+                    <div className="flex items-center shrink-0">
+                      <span className="text-12 leading-[14px] text-white font-medium text-right whitespace-nowrap">
+                        {t('page.manageAddress.backupSeedPhraseNow')}
+                      </span>
+                      <RcIconArrowRight14 className="w-[14px] h-[14px] shrink-0 text-white" />
+                    </div>
+                  </div>
+                )}
             </AddressItem>
-          </div>
-          <div className="flex justify-between items-center text-gray-subTitle text-13 px-20 py-16">
-            <div className="search-address-wrapper">
-              <Input
-                className="radius-6px"
-                placeholder="Search"
-                prefix={<img src={IconSearch} />}
-                onChange={(e) => setSearchKeyword(e.target.value)}
-                value={searchKeyword}
-                allowClear
-              />
-            </div>
-            <div
-              className="flex items-center cursor-pointer"
-              onClick={gotoManageAddress}
-            >
-              <span>Manage Address</span>
-              <IconRight />
-            </div>
           </div>
         </>
       )}
+      <div className="flex justify-between items-center text-r-neutral-body text-13 px-20 py-[12px]">
+        <SortInput
+          value={searchKeyword}
+          onChange={(e) => setSearchKeyword(e.target.value)}
+        />
+        <div
+          className="flex items-center cursor-pointer "
+          onClick={gotoManageAddress}
+        >
+          <span>{t('page.manageAddress.manage-address')}</span>
+          <RcIconRight className="relative top-1" />
+        </div>
+      </div>
       {noAnyAccount ? (
         <NoAddressUI />
       ) : noAnySearchedAccount ? (
@@ -382,12 +585,24 @@ const AddressManagement = () => {
       ) : (
         <div className={'address-group-list management'}>
           <VList
-            height={hasStatusBar ? 450 : 500}
+            ref={listRef}
+            key={addressSortStore.sortType + debouncedSearchKeyword}
+            height={
+              currentAccountIndex === -1
+                ? 471
+                : hasStatusBar
+                ? 368
+                : showBackupWarning
+                ? 382
+                : 426
+            }
             width="100%"
             itemData={filteredAccounts}
             itemCount={filteredAccounts.length}
-            itemSize={(i) => (i !== sortedAccountsList.length - 1 ? 64 : 78)}
-            className="scroll-container"
+            itemSize={getItemSize}
+            className="address-scroll-container"
+            overscanCount={6}
+            onScroll={handleScroll}
           >
             {Row}
           </VList>

@@ -4,7 +4,7 @@ import {
   NFTItem,
   TransferingNFTItem,
 } from '@rabby-wallet/rabby-api/dist/types';
-import React, { ReactNode } from 'react';
+import React from 'react';
 import { ellipsisTokenSymbol } from 'ui/utils/token';
 import styled from 'styled-components';
 import { TokenLabel } from './Values';
@@ -13,11 +13,12 @@ import clsx from 'clsx';
 const Wrapper = styled.div`
   display: flex;
   align-items: center;
+
   .nft-item-avatar {
     margin-right: 6px;
     flex-shrink: 0;
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     border: none;
     .ant-image {
       img {
@@ -32,12 +33,10 @@ const Wrapper = styled.div`
     font-weight: 500;
     font-size: 15px;
     line-height: 18px;
-    color: #333333;
-    flex-shrink: 0;
+    color: var(--r-neutral-title-1, #192945);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    display: flex;
   }
 `;
 
@@ -45,26 +44,37 @@ const NFTWithName = ({
   nft,
   textStyle,
   showTokenLabel = false,
+  id,
+  hasHover,
+  className,
 }: {
   nft: NFTItem;
   textStyle?: React.CSSProperties;
   showTokenLabel?: boolean;
+  id?: string;
+  hasHover?: boolean;
+  className?: string;
 }) => {
   const [focusingNFT, setFocusingNFT] = React.useState<NFTItem | null>(null);
   return (
     <>
-      <Wrapper>
+      <Wrapper className={className}>
         <NFTAvatar
-          onPreview={() => setFocusingNFT(nft)}
+          onPreview={(e) => {
+            e.stopPropagation();
+            setFocusingNFT(nft);
+          }}
           className="nft-item-avatar"
           thumbnail
           content={nft?.content}
           type={nft?.content_type}
         />
         <div
+          id={id}
           style={textStyle}
           className={clsx('name', {
             'flex-1': !showTokenLabel,
+            'cursor-pointer hover:underline hover:text-r-blue-default': hasHover,
           })}
           title={nft?.name || '-'}
         >
@@ -88,7 +98,10 @@ const NFTWithName = ({
       {focusingNFT && (
         <ModalPreviewNFTItem
           nft={(focusingNFT as unknown) as TransferingNFTItem}
-          onCancel={() => setFocusingNFT(null)}
+          onCancel={(e) => {
+            e.stopPropagation();
+            setFocusingNFT(null);
+          }}
         />
       )}
     </>

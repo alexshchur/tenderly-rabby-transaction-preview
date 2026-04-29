@@ -1,7 +1,7 @@
 import React from 'react';
 
-import { Input, InputProps } from 'antd';
-import useDebounceValue from '@/ui/hooks/useDebounceValue';
+import { Input, InputProps, InputRef } from 'antd';
+import useSyncStaleValue from '@/ui/hooks/useDebounceValue';
 
 /**
  * @description same as antd's Input, but with debounce
@@ -18,7 +18,7 @@ const DebouncedInput = React.forwardRef(
     },
     ref
   ) => {
-    const inputRef = React.useRef<Input>(null);
+    const inputRef = React.useRef<InputRef>(null);
     React.useImperativeHandle(ref, () => ({
       focus: () => {
         inputRef.current?.focus();
@@ -35,7 +35,7 @@ const DebouncedInput = React.forwardRef(
       if (props.autoFocus) inputRef.current?.focus();
     }, [props.autoFocus]);
 
-    const debouncedValue = useDebounceValue(value, debounce);
+    const debouncedValue = useSyncStaleValue(value, debounce);
     React.useEffect(() => {
       props.onChange?.(debouncedValue);
     }, [debouncedValue]);

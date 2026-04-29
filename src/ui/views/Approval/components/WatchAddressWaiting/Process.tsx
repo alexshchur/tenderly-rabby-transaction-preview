@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Account } from 'background/service/preference';
 import {
   CHAINS_ENUM,
@@ -16,9 +17,9 @@ import {
   ApprovalPopupContainer,
   Props as ApprovalPopupContainerProps,
 } from '../Popup/ApprovalPopupContainer';
-import { NetworkStatus } from './NetworkStatus';
 
 type Valueof<T> = T[keyof T];
+const INIT_SENDING_COUNTER = 60;
 
 const Process = ({
   status,
@@ -27,20 +28,23 @@ const Process = ({
   onRetry,
   onCancel,
   onDone,
-  chain,
 }: {
   chain: CHAINS_ENUM;
   result: string;
   status: Valueof<typeof WALLETCONNECT_STATUS_MAP>;
   account: Account;
   error: { code?: number; message?: string } | null;
-  onRetry(): void;
+  onRetry(retry?: boolean): void;
   onCancel(): void;
   onDone(): void;
+  nonce?: string;
+  chainId?: number;
+  from?: string;
 }) => {
   const { setClassName, setTitle: setPopupViewTitle } = useCommonPopupView();
   const [displayBrandName] = useDisplayBrandName(account.brandName);
   const brandRealUrl = useWalletConnectIcon(account);
+  const { t } = useTranslation();
   const brandUrl = React.useMemo(() => {
     return (
       brandRealUrl ||
@@ -49,7 +53,9 @@ const Process = ({
       WALLET_BRAND_CONTENT.WALLETCONNECT.icon
     );
   }, [brandRealUrl]);
-  const [sendingCounter, setSendingCounter] = React.useState(5);
+  const [sendingCounter, setSendingCounter] = React.useState(
+    INIT_SENDING_COUNTER
+  );
   const [content, setContent] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [statusProp, setStatusProp] = React.useState<
@@ -58,7 +64,7 @@ const Process = ({
 
   const handleRetry = () => {
     onRetry();
-    setSendingCounter(5);
+    setSendingCounter(INIT_SENDING_COUNTER);
   };
   const handleCancel = () => {
     onCancel();
@@ -70,13 +76,20 @@ const Process = ({
 
   const mergedStatus = React.useMemo(() => {
     if (sendingCounter <= 0 && status === WALLETCONNECT_STATUS_MAP.CONNECTED) {
-      return WALLETCONNECT_STATUS_MAP.FAILD;
+      return WALLETCONNECT_STATUS_MAP.FAILED;
     }
     return status;
   }, [status, sendingCounter]);
 
   React.useEffect(() => {
-    setPopupViewTitle(`Sign with ${displayBrandName}`);
+    setPopupViewTitle(
+      <div className="flex justify-center items-center">
+        <img src={brandUrl} className="w-20 mr-8" />
+        <span>
+          {t('page.signFooterBar.qrcode.signWith', { brand: displayBrandName })}
+        </span>
+      </div>
+    );
   }, [displayBrandName]);
 
   const init = async () => {
@@ -86,28 +99,28 @@ const Process = ({
   React.useEffect(() => {
     switch (mergedStatus) {
       case WALLETCONNECT_STATUS_MAP.CONNECTED:
-        setContent('Sending signing request');
+        setContent(t('page.signFooterBar.walletConnect.sendingRequest'));
         setDescription('');
         setStatusProp('SENDING');
         break;
       case WALLETCONNECT_STATUS_MAP.WAITING:
-        setContent('Request successfully sent. ');
-        setDescription('Please sign on your mobile wallet.');
+        setContent(t('page.signFooterBar.walletConnect.sendingRequest'));
+        setDescription('');
         setStatusProp('WAITING');
         break;
-      case WALLETCONNECT_STATUS_MAP.FAILD:
-        setContent('Signing request failed to send');
-        setDescription('');
+      case WALLETCONNECT_STATUS_MAP.FAILED:
+        setContent(t('page.signFooterBar.walletConnect.requestFailedToSend'));
+        setDescription(error?.message || '');
         setStatusProp('FAILED');
         break;
-      case WALLETCONNECT_STATUS_MAP.SIBMITTED:
-        setContent('Signature completed');
+      case WALLETCONNECT_STATUS_MAP.SUBMITTED:
+        setContent(t('page.signFooterBar.qrcode.sigCompleted'));
         setDescription('');
         setStatusProp('RESOLVED');
         break;
       case WALLETCONNECT_STATUS_MAP.REJECTED:
-        setContent('Transaction rejected');
-        setDescription('');
+        setContent(t('page.signFooterBar.ledger.txRejected'));
+        setDescription(error?.message || '');
         setStatusProp('REJECTED');
         break;
     }
@@ -119,12 +132,14 @@ const Process = ({
 
   return (
     <ApprovalPopupContainer
-      brandUrl={brandUrl}
+      hdType="walletconnect"
+      showAnimation
       status={statusProp}
       onRetry={handleRetry}
       onDone={onDone}
       onCancel={handleCancel}
       description={description}
+      hasMoreDescription={!!description}
       content={
         <>
           {content}
@@ -133,12 +148,7 @@ const Process = ({
           )}
         </>
       }
-    >
-      <NetworkStatus
-        account={account}
-        className="absolute left-[-12px] bottom-[-16px]"
-      />
-    </ApprovalPopupContainer>
+    ></ApprovalPopupContainer>
   );
 };
 

@@ -4,10 +4,7 @@ import clsx from 'clsx';
 import IconQuestionMark from 'ui/assets/sign/tx/question-mark.svg';
 import { TooltipWithMagnetArrow } from '@/ui/component/Tooltip/TooltipWithMagnetArrow';
 
-const TableWrapper = styled.div`
-  border: 1px solid #ededed;
-  border-radius: 8px;
-`;
+const TableWrapper = styled.div``;
 
 const Table = ({
   children,
@@ -21,75 +18,93 @@ const Table = ({
 
 const ColWrapper = styled.div`
   display: flex;
-  border-bottom: 1px solid #ededed;
   align-items: stretch;
   width: 100%;
-  &:nth-last-child(1) {
-    border-bottom: none;
-  }
+  padding: 12px 0;
 `;
 
-const Col = ({ children }: { children: ReactNode }) => {
-  return <ColWrapper className="col">{children}</ColWrapper>;
+const Col = ({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) => {
+  return (
+    <ColWrapper className={clsx('col group', className)}>{children}</ColWrapper>
+  );
 };
 
 const RowWrapper = styled.div`
   position: relative;
-  padding: 13px 10px;
   font-weight: 500;
-  font-size: 15px;
-  line-height: 18px;
-  color: #333333;
+  font-size: 14px;
+  line-height: 16px;
+  color: var(--r-neutral-body, #3e495e);
+  white-space: nowrap;
+  display: flex;
+  align-items: flex-start;
+  flex: 1;
+
+  &:has(.security-level-tag) {
+    padding-right: 8px;
+  }
+
+  &.wrap {
+    white-space: normal;
+    text-align: left;
+    padding-left: 30px;
+    flex: initial;
+    word-break: break-all;
+  }
+
+  &.wrap:not(.title) {
+    text-align: left;
+  }
+
   &:not(.title) {
-    flex: 1;
-    width: 190px;
+    text-align: right;
+    text-overflow: ellipsis;
+    justify-content: flex-end;
   }
   &:has(.desc-list) {
     padding-right: 0;
   }
   &.title {
-    font-size: 15px;
-    line-height: 18px;
-    color: #333333;
-    border-right: 1px solid #ededed;
-    width: 120px;
     flex-shrink: 0;
-    background-color: #f6f8ff;
+    flex: 1;
+    color: var(--r-neutral-title-1, #192945);
+    font-weight: 400;
+
     .icon-tip {
       display: inline;
     }
   }
   &.has-bottom-border {
-    flex: 1;
-    border-bottom: 1px solid #e5e9ef;
-    width: auto;
-    &:nth-last-child(1) {
-      border-bottom: none;
-    }
   }
   .desc-list {
     font-size: 13px;
-    line-height: 15px;
-    color: #4b4d59;
+    line-height: 16px;
+    color: var(--r-neutral-foot, #6a7587);
     margin: 0;
     font-weight: 400;
     li {
       padding-left: 10px;
-      margin-bottom: 8px;
-      padding-right: 10px;
+      margin-bottom: 4px;
+      padding-right: 0;
       position: relative;
       &::before {
         content: '';
         position: absolute;
-        left: 3px;
         width: 3px;
         height: 3px;
-        background-color: #999;
+        background-color: var(--r-neutral-foot, #6a7587);
         border-radius: 100%;
         top: 6px;
+        margin-left: -6px;
       }
       &:nth-child(1) {
-        margin-top: 8px;
+        margin-top: 4px;
       }
       &:nth-last-child(1) {
         margin-bottom: 0;
@@ -102,11 +117,15 @@ const Row = ({
   isTitle = false,
   tip,
   className,
+  wrap,
+  itemsCenter,
 }: {
   children: ReactNode;
   isTitle?: boolean;
   tip?: string;
   className?: string;
+  wrap?: boolean;
+  itemsCenter?: boolean;
 }) => {
   return (
     <RowWrapper
@@ -114,7 +133,8 @@ const Row = ({
         'row relative',
         {
           title: isTitle,
-          block: tip,
+          'items-center': itemsCenter || tip,
+          wrap: wrap,
         },
         className
       )}
@@ -122,6 +142,7 @@ const Row = ({
       {children}
       {tip && (
         <TooltipWithMagnetArrow
+          inApproval
           title={tip}
           overlayClassName="rectangle w-[max-content] max-w-[355px]"
         >

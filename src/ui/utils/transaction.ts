@@ -2,6 +2,10 @@ import abi from 'human-standard-token-abi';
 import { ethers } from 'ethers';
 import BigNumber from 'bignumber.js';
 import { ExplainTxResponse } from '@/background/service/openapi';
+import { hexToString, isHex, stringToHex } from 'viem';
+import eventBus from '@/eventBus';
+import { EVENTS } from '@/constant';
+import { WalletController, WalletControllerType } from './WalletContext';
 
 const hstInterface = new ethers.utils.Interface(abi);
 
@@ -26,46 +30,106 @@ export function calcTokenValue(value: string, decimals: number) {
 }
 
 export function getCustomTxParamsData(
-  data,
+  data: string,
   {
     customPermissionAmount,
     decimals,
   }: { customPermissionAmount: string; decimals: number }
 ) {
-  const tokenData = getTokenData(data);
-
-  if (!tokenData) {
-    throw new Error('Invalid data');
-  }
-  let spender = getTokenAddressParam(tokenData);
-  if (spender.startsWith('0x')) {
-    spender = spender.substring(2);
-  }
-  const [signature, tokenValue] = data.split(spender);
-
-  if (!signature || !tokenValue) {
-    throw new Error('Invalid data');
-  } else if (tokenValue.length !== 64) {
-    throw new Error(
-      'Invalid token value; should be exactly 64 hex digits long (u256)'
+  const methodId = data.substring(0, 10);
+  if (methodId === '0x39509351') {
+    // increaseAllowance
+    const iface = new ethers.utils.Interface([
+      {
+        inputs: [
+          { internalType: 'address', name: 'spender', type: 'address' },
+          { internalType: 'uint256', name: 'increment', type: 'uint256' },
+        ],
+        name: 'increaseAllowance',
+        outputs: [{ internalType: 'bool', name: '', type: 'bool' }],
+        stateMutability: 'nonpayable',
+        type: 'function',
+      },
+    ]);
+    const [spender] = iface.decodeFunctionData('increaseAllowance', data);
+    const customPermissionValue = calcTokenValue(
+      customPermissionAmount,
+      decimals
     );
+    const calldata = iface.encodeFunctionData('increaseAllowance', [
+      spender,
+      customPermissionValue.toFixed(),
+    ]);
+    return calldata;
+  } else if (methodId === '0x87517c45') {
+    /**
+     * Approves the spender to use up to amount of the specified token up until the expiration
+     * https://arbiscan.io/address/0x000000000022D473030F116dDEE9F6B43aC78BA3#writeContract
+     */
+    const iface = new ethers.utils.Interface([
+      {
+        inputs: [
+          { internalType: 'address', name: 'token', type: 'address' },
+          { internalType: 'address', name: 'spender', type: 'address' },
+          { internalType: 'uint160', name: 'amount', type: 'uint160' },
+          { internalType: 'uint48', name: 'expiration', type: 'uint48' },
+        ],
+        name: 'approve',
+        outputs: [],
+        stateMutability: 'nonpayable',
+        type: 'function',
+      },
+    ]);
+    const [token, spender, , expiration] = iface.decodeFunctionData(
+      'approve',
+      data
+    );
+    const customPermissionValue = calcTokenValue(
+      customPermissionAmount,
+      decimals
+    );
+
+    if (customPermissionValue.toString(16).length > 40) {
+      throw new Error('Custom value is larger than uint160');
+    }
+
+    const calldata = iface.encodeFunctionData('approve', [
+      token,
+      spender,
+      customPermissionValue.toFixed(),
+      expiration,
+    ]);
+    return calldata;
+  } else {
+    const tokenData = getTokenData(data);
+
+    if (!tokenData) {
+      throw new Error('Invalid data');
+    }
+    let spender = getTokenAddressParam(tokenData);
+    if (spender.startsWith('0x')) {
+      spender = spender.substring(2);
+    }
+    const separator = new RegExp(spender, 'i');
+    const [signature, tokenValue] = data.split(separator);
+
+    if (!signature || !tokenValue) {
+      throw new Error('Invalid data');
+    }
+
+    let customPermissionValue = calcTokenValue(
+      customPermissionAmount,
+      decimals
+    ).toString(16);
+
+    if (customPermissionValue.length > 64) {
+      throw new Error('Custom value is larger than u256');
+    }
+
+    customPermissionValue = customPermissionValue.padStart(64, '0');
+    const customTxParamsData = `${signature}${spender}${customPermissionValue}`;
+    return customTxParamsData;
   }
-
-  let customPermissionValue = calcTokenValue(
-    customPermissionAmount,
-    decimals
-  ).toString(16);
-
-  if (customPermissionValue.length > 64) {
-    throw new Error('Custom value is larger than u256');
-  }
-
-  customPermissionValue = customPermissionValue.padStart(
-    tokenValue.length,
-    '0'
-  );
-  const customTxParamsData = `${signature}${spender}${customPermissionValue}`;
-  return customTxParamsData;
 }
 
 export function varyTxSignType(txDetail: ExplainTxResponse | null) {
@@ -130,3 +194,109 @@ export function varyTxSignType(txDetail: ExplainTxResponse | null) {
     isToken,
   };
 }
+
+/**
+ * @description accept input data as hex or string, and return the formatted result
+ */
+export function formatTxInputDataOnERC20(maybeHex: string) {
+  const result = {
+    withInputData: false,
+    currentIsHex: false,
+    currentData: '',
+    hexData: '',
+    utf8Data: '',
+  };
+
+  if (!maybeHex) return result;
+
+  result.currentIsHex = maybeHex.startsWith('0x') && isHex(maybeHex);
+
+  if (result.currentIsHex) {
+    try {
+      result.currentData = hexToString(maybeHex as any);
+      result.withInputData = true;
+      result.hexData = maybeHex;
+      result.utf8Data = result.currentData;
+    } catch (err) {
+      result.currentData = '';
+    }
+  } else {
+    result.currentData = maybeHex;
+    result.hexData = stringToHex(maybeHex);
+    result.utf8Data = maybeHex;
+    result.withInputData = true;
+  }
+
+  return result;
+}
+
+function formatNumberArg(arg: string | number, opt = {} as BigNumber.Format) {
+  const bn = new BigNumber(arg);
+  const format = {
+    prefix: '',
+    decimalSeparator: '.',
+    groupSeparator: '',
+    groupSize: 3,
+    secondaryGroupSize: 0,
+    fractionGroupSeparator: ' ',
+    fractionGroupSize: 0,
+    suffix: '',
+    ...opt,
+  };
+
+  return bn.toFormat(0, format);
+}
+
+export function formatTxExplainAbiData(abi?: ExplainTxResponse['abi'] | null) {
+  return [
+    abi?.func,
+    '(',
+    (abi?.params || [])
+      ?.map((argValue, idx) => {
+        const argValueText =
+          typeof argValue === 'number' ? formatNumberArg(argValue) : argValue;
+        return `arg${idx}=${argValueText}`;
+      })
+      .join(', '),
+    ')',
+  ].join('');
+}
+
+export const waitForTxCompleted = async ({
+  wallet,
+  hash,
+  chainServerId,
+}: {
+  hash: string;
+  chainServerId: string;
+  wallet: WalletControllerType;
+}) => {
+  return await new Promise((resolve, reject) => {
+    const handler = (res) => {
+      if (res?.hash === hash) {
+        if (res?.status && Number(res.status) !== 0) {
+          resolve(true);
+        } else {
+          reject(new Error('tx failed'));
+        }
+        unsubscribe();
+      }
+    };
+
+    eventBus.addEventListener(EVENTS.TX_COMPLETED, handler);
+
+    const unsubscribe = () =>
+      eventBus.removeEventListener(EVENTS.TX_COMPLETED, handler);
+
+    wallet.getRpcTxReceipt(chainServerId, hash).then((res) => {
+      if (res.code === 0) {
+        if (res?.status) {
+          resolve(true);
+        } else {
+          reject(new Error('tx failed'));
+        }
+        unsubscribe();
+      }
+    });
+  });
+};

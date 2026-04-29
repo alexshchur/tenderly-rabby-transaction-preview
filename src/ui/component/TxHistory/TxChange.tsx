@@ -5,20 +5,21 @@ import IconUnknown from 'ui/assets/token-default.svg';
 import { numberWithCommasIsLtOne } from 'ui/utils';
 import { getTokenSymbol } from 'ui/utils/token';
 import { TokenLabel } from './TokenLabel';
+import { useTranslation } from 'react-i18next';
+import { TxHistoryItemRow } from '@/db/schema/history';
 
 type TokenChangeProps = {
-  data: TxDisplayItem | TxHistoryItem;
+  data: TxHistoryItemRow;
   canClickToken?: boolean;
   onClose?: () => void;
-} & Pick<TxDisplayItem, 'tokenDict'>;
+};
 
 export const TokenChange = ({
   data: info,
-  tokenDict,
   canClickToken = true,
   onClose,
 }: TokenChangeProps) => {
-  const tokens = tokenDict || {};
+  const { t } = useTranslation();
 
   if (!info.sends?.length && !info.receives?.length) {
     return null;
@@ -27,12 +28,12 @@ export const TokenChange = ({
   return (
     <div className="ui token-change">
       {info.sends?.map((v) => {
-        const token = tokens[v.token_id];
+        const token = v.token;
         const isNft = v.token_id?.length === 32;
         const symbol = getTokenSymbol(token);
         const name = isNft
           ? token?.name ||
-            (symbol ? `${symbol} ${token?.inner_id}` : 'Unknown NFT')
+            (symbol ? `${symbol} ${token?.inner_id}` : t('global.unknownNFT'))
           : symbol;
 
         return (
@@ -79,12 +80,12 @@ export const TokenChange = ({
         );
       })}
       {info.receives?.map((v) => {
-        const token = tokens[v.token_id];
+        const token = v.token;
         const isNft = v.token_id?.length === 32;
         const symbol = getTokenSymbol(token);
         const name = isNft
           ? token?.name ||
-            (symbol ? `${symbol} ${token?.inner_id}` : 'Unknown NFT')
+            (symbol ? `${symbol} ${token?.inner_id}` : t('global.unknownNFT'))
           : symbol;
 
         return (

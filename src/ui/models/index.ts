@@ -1,10 +1,11 @@
-import { Models } from '@rematch/core';
+import { Models, RematchDispatch, RematchRootState } from '@rematch/core';
 
 import { app } from './app';
 import { appVersion } from './appVersion';
 import { account } from './account';
 import { permission } from './permission';
 import { preference } from './preference';
+import { currency } from './currency';
 import { openapi } from './openapi';
 import { contactBook } from './contactBook';
 import { accountToDisplay } from './accountToDisplay';
@@ -18,6 +19,16 @@ import { swap } from './swap';
 import { customRPC } from './customRPC';
 import { securityEngine } from './securityEngine';
 import { sign } from './sign';
+import { bridge } from './bridge';
+import { gasAccount } from './gasAccount';
+import { newUserGuide } from './newUserGuide';
+import { rateGuidance } from './rateGuidance';
+import { exchange } from './exchange';
+import { directSubmitTx } from './directSubmitTx';
+import { gift } from './gift';
+import { perps } from './perps';
+import { desktopProfile } from './desktopProfile';
+import { innerDappFrame } from './innerDappFrame';
 
 export interface RootModel extends Models<RootModel> {
   app: typeof app;
@@ -25,6 +36,7 @@ export interface RootModel extends Models<RootModel> {
   account: typeof account;
   permission: typeof permission;
   preference: typeof preference;
+  currency: typeof currency;
   openapi: typeof openapi;
   contactBook: typeof contactBook;
   accountToDisplay: typeof accountToDisplay;
@@ -38,6 +50,16 @@ export interface RootModel extends Models<RootModel> {
   customRPC: typeof customRPC;
   securityEngine: typeof securityEngine;
   sign: typeof sign;
+  bridge: typeof bridge;
+  gasAccount: typeof gasAccount;
+  newUserGuide: typeof newUserGuide;
+  rateGuidance: typeof rateGuidance;
+  exchange: typeof exchange;
+  directSubmitTx: typeof directSubmitTx;
+  gift: typeof gift;
+  perps: typeof perps;
+  desktopProfile: typeof desktopProfile;
+  innerDappFrame: typeof innerDappFrame;
 }
 
 export const models: RootModel = {
@@ -46,6 +68,7 @@ export const models: RootModel = {
   account,
   permission,
   preference,
+  currency,
   openapi,
   contactBook,
   accountToDisplay,
@@ -59,4 +82,17 @@ export const models: RootModel = {
   customRPC,
   securityEngine,
   sign,
+  bridge,
+  gasAccount,
+  newUserGuide,
+  rateGuidance,
+  exchange,
+  directSubmitTx,
+  gift,
+  perps,
+  desktopProfile,
+  innerDappFrame,
 };
+
+export type RabbyDispatch = RematchDispatch<RootModel>;
+export type RabbyRootState = RematchRootState<RootModel>;

@@ -5,6 +5,7 @@ export interface SessionProp {
   origin: string;
   icon: string;
   name: string;
+  isFromDesktopDapp?: boolean;
 }
 
 export class Session {
@@ -14,12 +15,14 @@ export class Session {
 
   name = '';
 
-  pm: PortMessage | null = null;
+  isFromDesktopDapp: boolean | undefined = false;
+
+  pms: PortMessage[] = [];
 
   pushMessage(event, data) {
-    if (this.pm) {
-      this.pm.send('message', { event, data });
-    }
+    this.pms.forEach((pm) => {
+      pm.send('message', { event, data });
+    });
   }
 
   constructor(data?: SessionProp | null) {
@@ -29,13 +32,17 @@ export class Session {
   }
 
   setPortMessage(pm: PortMessage) {
-    this.pm = pm;
+    if (this.pms.find((p) => p === pm)) {
+      return;
+    }
+    this.pms.push(pm);
   }
 
-  setProp({ origin, icon, name }: SessionProp) {
+  setProp({ origin, icon, name, isFromDesktopDapp }: SessionProp) {
     this.origin = origin;
     this.icon = icon;
     this.name = name;
+    this.isFromDesktopDapp = isFromDesktopDapp;
   }
 }
 
@@ -65,14 +72,36 @@ const createSession = (key: string, data?: null | SessionProp) => {
   return session;
 };
 
+const deleteSessionsByTabId = (tabId: number) => {
+  for (const key of sessionMap.keys()) {
+    const [sessionTab] = key.split('-');
+    if (sessionTab === tabId.toString()) {
+      deleteSession(key);
+    }
+  }
+};
+
 const deleteSession = (key: string) => {
   sessionMap.delete(key);
 };
 
-const broadcastEvent = (ev, data?, origin?: string) => {
+const broadcastEvent = (
+  ev: string,
+  data?,
+  origin?: string,
+  ignorePermission?: boolean,
+  isFromDesktopDapp?: boolean
+) => {
   let sessions: { key: string; data: Session }[] = [];
+
   sessionMap.forEach((session, key) => {
-    if (session && permissionService.hasPermission(session.origin)) {
+    if (
+      session &&
+      (isFromDesktopDapp == undefined
+        ? true
+        : !!session.isFromDesktopDapp === !!isFromDesktopDapp) &&
+      (permissionService.hasPermission(session.origin) || ignorePermission)
+    ) {
       sessions.push({
         key,
         data: session,
@@ -101,5 +130,6 @@ export default {
   getSession,
   getOrCreateSession,
   deleteSession,
+  deleteSessionsByTabId,
   broadcastEvent,
 };

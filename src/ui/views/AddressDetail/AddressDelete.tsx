@@ -2,7 +2,6 @@ import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popup } from 'ui/component';
 import { useWallet } from 'ui/utils';
-import AuthenticationModalPromise from 'ui/component/AuthenticationModal';
 import './style.less';
 import { ReactComponent as IconArrowRight } from 'ui/assets/arrow-right-gray.svg';
 import { Button, message } from 'antd';
@@ -14,6 +13,10 @@ import {
 } from '@/constant';
 import IconSuccess from 'ui/assets/success.svg';
 import { useHistory } from 'react-router-dom';
+import { usePopupContainer } from '@/ui/hooks/usePopupContainer';
+import { UI_TYPE } from '@/constant/ui';
+import { useHandleDeleteHdKeyringAndSimpleKeyringAccount } from '@/ui/hooks/useDeleteHdOrPrivateKeyringAddress';
+import { useRabbyDispatch } from '@/ui/store';
 
 type AddressDeleteProps = {
   brandName?: string;
@@ -31,51 +34,61 @@ export const AddressDelete = ({
   const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   const history = useHistory();
+  const { getContainer } = usePopupContainer();
+  const dispatch = useRabbyDispatch();
 
   const handleDeleteAddress = async () => {
-    await wallet.removeAddress(
+    dispatch.addressManagement.removeAddress([
       address,
       type,
       brandName,
       type === KEYRING_TYPE.HdKeyring ||
-        KEYRING_CLASS.HARDWARE.GRIDPLUS ||
-        KEYRING_CLASS.HARDWARE.KEYSTONE
+      KEYRING_CLASS.HARDWARE.GRIDPLUS ||
+      KEYRING_CLASS.HARDWARE.KEYSTONE
         ? false
-        : true
-    );
+        : true,
+    ]);
+
     message.success({
       icon: <img src={IconSuccess} className="icon icon-success" />,
-      content: t('Deleted'),
+      content: t('global.Deleted'),
       duration: 0.5,
     });
     setVisible(false);
-    setTimeout(() => {
-      history.goBack();
-    }, 500);
+    if (UI_TYPE.isDesktop) {
+      history.replace(history.location.pathname);
+    } else {
+      setTimeout(() => {
+        history.goBack();
+      }, 500);
+    }
   };
+
+  const {
+    deleteAccount,
+    renderDelete,
+  } = useHandleDeleteHdKeyringAndSimpleKeyringAccount();
 
   const handleClickDelete = async () => {
     if (
       type === KEYRING_TYPE.HdKeyring ||
       type === KEYRING_TYPE.SimpleKeyring
     ) {
-      await AuthenticationModalPromise({
-        confirmText: 'Confirm',
-        cancelText: 'Cancel',
-        title: 'Delete address',
-        description:
-          'Before you delete, keep the following points in mind to understand how to protect your assets.',
-        checklist: [
-          'I understand that if I delete this address, the corresponding Private Key & Seed Phrase of this address will be deleted and Rabby will NOT be able to recover it.',
-          "I confirm that I have backuped the private key or Seed Phrase and I'm ready to delete it now.",
-        ],
-        onFinished() {
-          handleDeleteAddress();
+      await deleteAccount({
+        address,
+        type,
+        brandName,
+        getContainer,
+        onFinished: () => {
+          setVisible(false);
+          if (UI_TYPE.isDesktop) {
+            history.replace(history.location.pathname);
+          } else {
+            setTimeout(() => {
+              history.goBack();
+            }, 500);
+          }
         },
-        onCancel() {
-          // do nothing
-        },
-        wallet,
       });
     } else {
       setVisible(true);
@@ -91,7 +104,7 @@ export const AddressDelete = ({
         >
           <div className="rabby-list-item-content">
             <div className="rabby-list-item-label" style={{ color: '#EC5151' }}>
-              Delete Address
+              {t('page.addressDetail.delete-address')}
             </div>
             <div className="rabby-list-item-arrow">
               <IconArrowRight
@@ -103,7 +116,9 @@ export const AddressDelete = ({
           </div>
         </div>
       </div>
-      {![KEYRING_TYPE.HdKeyring, KEYRING_TYPE.SimpleKeyring].includes(type) && (
+      {![KEYRING_TYPE.HdKeyring, KEYRING_TYPE.SimpleKeyring].includes(
+        type as any
+      ) && (
         <AddressDeleteModal
           type={type}
           brandName={brandName}
@@ -116,6 +131,7 @@ export const AddressDelete = ({
           }}
         ></AddressDeleteModal>
       )}
+      <>{renderDelete()}</>
     </>
   );
 };
@@ -134,6 +150,7 @@ const AddressDeleteModal = ({
   brandName: string | undefined;
   type: string;
 }) => {
+  const { getContainer } = usePopupContainer();
   const { t } = useTranslation();
   const renderBrand = useMemo(() => {
     if (brandName && WALLET_BRAND_CONTENT[brandName]) {
@@ -147,18 +164,19 @@ const AddressDeleteModal = ({
   return (
     <Popup
       visible={visible}
-      title={t('Delete address')}
+      title={t('page.addressDetail.delete-address')}
       height={240}
       className="address-delete-modal"
       onClose={onClose}
+      isSupportDarkMode
+      getContainer={getContainer}
     >
       <div className="desc">
-        This address is a {renderBrand} address, Rabby does not store the
-        private key or seed phrase for this address, you can just delete it
+        {t('page.addressDetail.direct-delete-desc', { renderBrand })}
       </div>
       <footer className="footer flex gap-[16px]">
         <Button type="primary" size="large" block onClick={onClose}>
-          Cancel
+          {t('global.Cancel')}
         </Button>
         <Button
           onClick={onSubmit}
@@ -168,7 +186,7 @@ const AddressDeleteModal = ({
           className={'rabby-btn-ghost'}
           block
         >
-          Confirm Delete
+          {t('page.manageAddress.confirm-delete')}
         </Button>
       </footer>
     </Popup>

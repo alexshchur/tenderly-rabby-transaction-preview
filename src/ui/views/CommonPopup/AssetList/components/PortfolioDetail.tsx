@@ -12,6 +12,7 @@ import { formatAmount, formatUsdValue } from 'ui/utils/number';
 import { TooltipWithMagnetArrow } from '@/ui/component/Tooltip/TooltipWithMagnetArrow';
 import IconUnknown from 'ui/assets/token-default.svg';
 import IconTokenTip from 'ui/assets/dashboard/portfolio/token-tip.svg';
+import { useTranslation } from 'react-i18next';
 
 type TokenItem = {
   id: string;
@@ -47,10 +48,12 @@ const TokenListWrapper = styled.div`
   .header {
     display: flex;
     margin-top: 16px;
+    padding-left: 4px;
+    padding-right: 4px;
     .td {
       font-size: 12px;
       line-height: 14px;
-      color: #707280;
+      color: var(--r-neutral-foot, #6a7587);
       text-align: left;
       width: 120px;
       margin-bottom: 12px;
@@ -63,11 +66,13 @@ const TokenListWrapper = styled.div`
   .row {
     display: flex;
     margin-bottom: 16px;
+    padding-left: 4px;
+    padding-right: 4px;
     .td {
       width: 120px;
       font-size: 13px;
       line-height: 15px;
-      color: #13141a;
+      color: var(--r-neutral-title-1, #192945);
       text-align: left;
       &:nth-last-child(1) {
         text-align: right;
@@ -95,7 +100,12 @@ export const TokenList = ({
     shareToken: PortfolioItemToken;
   };
 }) => {
-  const headers = [name, 'AMOUNT', 'USD VALUE'];
+  const { t } = useTranslation();
+  const headers = [
+    name,
+    t('page.dashboard.assets.amount'),
+    t('page.dashboard.assets.usdValue'),
+  ];
 
   const _tokens: TokenItem[] = useMemo(() => {
     return (tokens ?? [])
@@ -132,9 +142,7 @@ export const TokenList = ({
         _amount: `${_symbol} x${n.amount}`,
         _netWorth,
         _netWorthStr: _netWorth ? formatUsdValue(_netWorth) : '-',
-        tip: _netWorth
-          ? 'Calculated based on the floor price recognized by this protocol.'
-          : '',
+        tip: _netWorth ? t('page.dashboard.assets.portfolio.nftTips') : '',
       };
     });
   }, [nfts]);
@@ -156,7 +164,7 @@ export const TokenList = ({
             ? formatUsdValue(fraction.value ?? 0)
             : '-',
           tip: fraction.value
-            ? 'Calculate based on the price of the linked ERC20 token.'
+            ? t('page.dashboard.assets.portfolio.fractionTips')
             : '',
         }
       : null;
@@ -224,7 +232,7 @@ const SupplementsWrapper = styled.div`
   width: calc(100% + 20px);
   background: linear-gradient(
     90deg,
-    rgba(134, 151, 255, 0.1) 0%,
+    var(--r-blue-light-1, #eef1ff) 0%,
     rgba(134, 151, 255, 0) 100%
   );
   row-gap: 8px;
@@ -233,10 +241,10 @@ const SupplementsWrapper = styled.div`
     font-size: 12px;
     line-height: 14px;
     .label {
-      color: #6f7280;
+      color: var(--r-neutral-body, #babec5);
     }
     .content {
-      color: #4a4d59;
+      color: var(--r-neutral-title-1, #192945);
       margin-left: 4px;
     }
   }

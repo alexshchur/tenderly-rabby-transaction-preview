@@ -5,6 +5,13 @@
   display: flex;
   flex-direction: column;
 
+  &::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  .ant-tabs {
+    overflow: visible;
+  }
   .activities_tabs.ant-tabs .ant-tabs-top > .ant-tabs-nav {
     margin-bottom: 20px;
   }
@@ -37,7 +44,7 @@
     }
 
     &.ant-tabs-tab-active {
-      background-color: @primary-color;
+      background-color: var(--r-blue-default, #7084ff);
       .tab-title {
         color: white;
       }

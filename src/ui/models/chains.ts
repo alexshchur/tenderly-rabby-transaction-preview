@@ -2,25 +2,31 @@ import { createModel } from '@rematch/core';
 
 import { ConnectedSite } from '@/background/service/permission';
 
+import { TestnetChain } from '@/background/service/customTestnet';
+import { CHAINS_ENUM } from '@/constant';
+import {
+  getChainList,
+  getMainnetListFromLocal,
+  updateChainStore,
+  varyAndSortChainItems,
+} from '@/utils/chain';
+import { Chain } from '@debank/common';
 import { RootModel } from '.';
-import { CHAINS_ENUM, KEYRING_CLASS } from '@/constant';
-import { RabbyRootState } from '../store';
-import { findChainByEnum, varyAndSortChainItems } from '@/utils/chain';
 import type { AccountState } from './account';
 
 type IState = {
   currentConnection: ConnectedSite | null | undefined;
-
   gnosisPendingCount: number;
-
-  gnosisNetworkIds: string[];
+  mainnetList: Chain[];
+  testnetList: TestnetChain[];
 };
 
 export const chains = createModel<RootModel>()({
   name: 'chains',
   state: <IState>{
     currentConnection: null,
-    gnosisNetworkIds: [] as string[],
+    mainnetList: getChainList('mainnet'),
+    testnetList: getChainList('testnet'),
   },
   reducers: {
     setField(state, payload: Partial<typeof state>) {
@@ -33,31 +39,25 @@ export const chains = createModel<RootModel>()({
       );
     },
   },
-  selectors(slice) {
-    return {
-      isCurrentAccountGnosis() {
-        return (rootState: RabbyRootState) => {
-          return (
-            rootState.account.currentAccount?.type === KEYRING_CLASS.GNOSIS
-          );
-        };
-      },
-      isShowGnosisWrongChainAlert() {
-        return slice((state) => {
-          if (!state.currentConnection) {
-            return false;
-          }
 
-          const chainItem = findChainByEnum(state.currentConnection.chain);
-
-          return (
-            !!chainItem && !state.gnosisNetworkIds.includes(chainItem.network)
-          );
-        });
-      },
-    };
-  },
   effects: (dispatch) => ({
+    init(_: void, store) {
+      store.app.wallet.getCustomTestnetLogos();
+      store.app.wallet.getCustomTestnetList().then((testnetList) => {
+        updateChainStore({
+          testnetList: testnetList,
+        });
+        this.setField({ testnetList });
+      });
+      getMainnetListFromLocal().then((mainnetList) => {
+        if (mainnetList.length) {
+          updateChainStore({
+            mainnetList: mainnetList,
+          });
+          this.setField({ mainnetList });
+        }
+      });
+    },
     /**
      * @description get all chains current account could access, vary them and sort them
      */

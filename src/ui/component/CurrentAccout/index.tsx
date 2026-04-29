@@ -10,6 +10,8 @@ import NameAndAddress from '../NameAndAddress';
 import { useWalletConnectIcon } from '../WalletConnect/useWalletConnectIcon';
 import React from 'react';
 import ImgCopy from 'ui/assets/icon-copy.svg';
+import { pickKeyringThemeIcon } from '@/utils/account';
+import { useThemeMode } from '@/ui/hooks/usePreference';
 
 const CurrentAccountWrapper = styled.div`
   border-radius: 6px;
@@ -36,12 +38,12 @@ const CurrentAccountWrapper = styled.div`
     color: #fff;
   }
   &.success {
-    background: #f5f6fa;
+    background: var(--r-neutral-card2, rgba(255, 255, 255, 0.06));
     .name {
-      color: #13141a;
+      color: var(--r-neutral-title1, #f7fafc);
     }
     .addr {
-      color: #4b4d59;
+      color: var(--r-neutral-body, #d3d8e0);
     }
   }
 `;
@@ -55,10 +57,14 @@ export const CurrentAccount = ({
 }) => {
   const [currentAccount] = useAccount();
   const brandIcon = useWalletConnectIcon(currentAccount);
+  const { isDarkTheme } = useThemeMode();
 
   if (!currentAccount) return null;
   const addressTypeIcon: string = noInvert
     ? brandIcon ||
+      pickKeyringThemeIcon(currentAccount.brandName as any, {
+        needLightVersion: isDarkTheme,
+      }) ||
       KEYRING_ICONS[currentAccount.type] ||
       WALLET_BRAND_CONTENT[currentAccount.brandName]?.image
     : brandIcon ||

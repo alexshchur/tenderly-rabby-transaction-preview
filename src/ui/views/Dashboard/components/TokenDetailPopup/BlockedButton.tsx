@@ -1,6 +1,8 @@
+import { TooltipWithMagnetArrow } from '@/ui/component/Tooltip/TooltipWithMagnetArrow';
 import { Switch } from 'antd';
 import clsx from 'clsx';
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import styled from 'styled-components';
 
 export interface Props {
@@ -11,7 +13,7 @@ export interface Props {
 
 const SwitchStyled = styled(Switch)`
   &.ant-switch-checked {
-    background-color: #ec5151;
+    background-color: #2abb7f;
   }
 
   &.ant-switch-small {
@@ -37,39 +39,30 @@ export const BlockedButton: React.FC<Props> = ({
   onOpen,
   onClose,
 }) => {
+  const { t } = useTranslation();
   return (
-    <div
-      className={clsx('flex rounded', {
-        'py-[9px] px-8 bg-orange bg-opacity-20 justify-between -mt-10 mb-20 -mr-4': selected,
-        'float-right justify-end': !selected,
-      })}
-    >
-      <div
-        className={clsx(
-          'text-orange ml-4 text-13',
-          selected ? 'block' : 'hidden'
-        )}
-      >
-        Blocked token will not be shown in token list
+    <label className={clsx('flex items-center gap-x-6 cursor-pointer')}>
+      <div className="relative">
+        <TooltipWithMagnetArrow
+          overlayClassName="rectangle w-[max-content]"
+          title={t('page.dashboard.tokenDetail.blockedTips')}
+        >
+          <span className="text-r-neutral-foot text-12">
+            {t('page.dashboard.tokenDetail.blocked')}
+          </span>
+        </TooltipWithMagnetArrow>
       </div>
-      <label
-        className={clsx('flex items-center gap-x-6 cursor-pointer', {
-          'mr-4 mt-2': !selected,
-        })}
-      >
-        <SwitchStyled
-          size="small"
-          checked={selected}
-          onChange={(val) => {
-            if (val) {
-              onOpen();
-            } else {
-              onClose();
-            }
-          }}
-        />
-        <span className="text-black text-12">Blocked</span>
-      </label>
-    </div>
+      <SwitchStyled
+        size="small"
+        checked={selected}
+        onChange={(val) => {
+          if (val) {
+            onOpen();
+          } else {
+            onClose();
+          }
+        }}
+      />
+    </label>
   );
 };

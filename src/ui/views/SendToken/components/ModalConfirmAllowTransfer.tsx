@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useLayoutEffect } from 'react';
 
 import styled from 'styled-components';
-import { Button, Form, Input } from 'antd';
+import { Button, DrawerProps, Form, Input, InputRef } from 'antd';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -10,7 +10,6 @@ import {
 } from '@/ui/component/Modal/WrapPromise';
 import { Field, Popup, Checkbox } from '@/ui/component';
 import clsx from 'clsx';
-import LessPalette from '@/ui/style/var-defs';
 
 import IconCheckboxChecked from 'ui/assets/send-token/modal/checkbox-checked.svg';
 import IconCheckboxUnchecked from 'ui/assets/send-token/modal/checkbox-unchecked.svg';
@@ -24,6 +23,7 @@ interface ConfirmAllowTransferModalProps extends WrappedComponentProps {
   title?: string;
   description?: string;
   checklist?: string[];
+  getContainer?: DrawerProps['getContainer'];
 }
 
 const FormInputItem = styled(Form.Item)`
@@ -31,6 +31,17 @@ const FormInputItem = styled(Form.Item)`
 
   &.ant-form-item-has-error {
     margin-bottom: 0;
+  }
+  .ant-input.ant-input-lg.popup-input {
+    border: 1px solid var(--r-neutral-line, #d3d8e0) !important;
+    background: transparent !important;
+    &::placeholder {
+      color: var(--r-neutral-foot, #6a7587) !important;
+    }
+    &:focus,
+    &:hover {
+      border-color: var(--r-blue-default, #7084ff) !important;
+    }
   }
 `;
 
@@ -43,11 +54,12 @@ function ModalConfirmAllowTransfer({
   cancelText,
   confirmText = 'Confirm',
   title = 'Enter Password',
+  getContainer,
 }: ConfirmAllowTransferModalProps) {
   const [visible, setVisible] = useState(false);
   const [form] = Form.useForm();
   const { t } = useTranslation();
-  const inputRef = useRef<Input>(null);
+  const inputRef = useRef<InputRef>(null);
 
   const [confirmToAddToWhitelist, setConfirmToAddToWhitelist] = useState(false);
 
@@ -66,7 +78,7 @@ function ModalConfirmAllowTransfer({
       form.setFields([
         {
           name: 'password',
-          errors: [e?.message || t('incorrect password')],
+          errors: [e?.message || t('page.sendToken.allowTransferModal.error')],
         },
       ]);
     }
@@ -80,23 +92,44 @@ function ModalConfirmAllowTransfer({
   useLayoutEffect(() => {
     setTimeout(() => {
       setVisible(true);
-      inputRef.current?.focus();
+      if (!getContainer) {
+        inputRef.current?.focus();
+      } else {
+        // may chrome bug, when focus popup in wrong position ?
+        setTimeout(() => {
+          inputRef.current?.focus();
+        }, 500);
+      }
     });
   }, []);
 
   return (
-    <Popup visible={visible} title={title} onCancel={handleCancel} height={260}>
+    <Popup
+      visible={visible}
+      title={title}
+      onCancel={handleCancel}
+      height={260}
+      isSupportDarkMode
+      getContainer={getContainer}
+    >
       <Form onFinish={handleSubmit} form={form}>
         <FormInputItem
           name="password"
-          rules={[{ required: true, message: t('Please input password') }]}
+          // Please input password
+          rules={[
+            {
+              required: true,
+              message: t('page.sendToken.allowTransferModal.validator__empty'),
+            },
+          ]}
         >
           <Input
             className="popup-input"
-            placeholder={t('Enter the Password to Confirm')}
+            // Enter the Password to Confirm
+            placeholder={t('page.sendToken.allowTransferModal.placeholder')}
             type="password"
             size="large"
-            autoFocus
+            autoFocus={!getContainer}
             ref={inputRef}
             spellCheck={false}
           />
@@ -104,8 +137,7 @@ function ModalConfirmAllowTransfer({
         <p
           onClick={() => setConfirmToAddToWhitelist((prev) => !prev)}
           className={clsx(
-            'text-center text-[12px] cursor-pointer',
-            `text-[${LessPalette['@color-body']}]`,
+            'text-center text-[12px] cursor-pointer text-r-neutral-foot',
             !showAddToWhitelist && 'hidden'
           )}
         >
@@ -117,7 +149,8 @@ function ModalConfirmAllowTransfer({
             }
             className="icon icon-check inline-block relative -top-1 mr-[4px]"
           />
-          Add to whitelist
+          {/* Add to whitelist */}
+          {t('page.sendToken.allowTransferModal.addWhitelist')}
         </p>
         <div
           className={clsx(

@@ -1,13 +1,13 @@
 import { EVENTS, KEYRING_CLASS } from '@/constant';
 import eventBus from '@/eventBus';
 import { noop, useCommonPopupView, useWallet } from '@/ui/utils';
-import { DEFAULT_BRIDGE } from '@rabby-wallet/eth-walletconnect-keyring';
 import React from 'react';
 import { Account } from 'background/service/preference';
 import Scan from '@/ui/views/Approval/components/WatchAddressWaiting/Scan';
 import { useSessionStatus } from './useSessionStatus';
 import { useDisplayBrandName } from './useDisplayBrandName';
 import { message } from 'antd';
+import { useTranslation } from 'react-i18next';
 
 export const ReconnectView: React.FC = () => {
   const wallet = useWallet();
@@ -24,15 +24,11 @@ export const ReconnectView: React.FC = () => {
     null
   );
   const { status, errorAccount } = useSessionStatus(account);
-  const [bridgeURL, setBridge] = React.useState<string>(DEFAULT_BRIDGE);
   const [displayBrandName] = useDisplayBrandName(
     account?.realBrandName || account?.brandName
   );
 
   const initWalletConnect = async () => {
-    eventBus.addEventListener(EVENTS.WALLETCONNECT.INITED, ({ uri }) => {
-      setQRcodeContent(uri);
-    });
     if (account && ['CONNECTED', 'DISCONNECTED'].includes(status as string)) {
       await wallet.killWalletConnectConnector(
         account.address,
@@ -50,40 +46,50 @@ export const ReconnectView: React.FC = () => {
   const handleRefreshQrCode = () => {
     initWalletConnect();
   };
+  const { t } = useTranslation();
 
-  const init = async () => {
+  const init = React.useCallback(async () => {
     if (!account) return;
-    const bridge = await wallet.getWalletConnectBridge(
-      account.address,
-      account.brandName
-    );
     setCurrentAccount({
       ...account,
       brandName: account.realBrandName || account.brandName,
       type: KEYRING_CLASS.WALLETCONNECT,
     });
-    setBridge(bridge || DEFAULT_BRIDGE);
-    setPopupViewTitle(`Connect with ${displayBrandName}`);
+    setPopupViewTitle(
+      t('page.newAddress.walletConnect.title', { brandName: displayBrandName })
+    );
     setHeight(420);
     setClassName('isConnectView');
-    initWalletConnect();
-  };
+  }, [account, displayBrandName]);
 
   React.useEffect(() => {
     init();
-  }, []);
+  }, [init]);
 
   React.useEffect(() => {
     if (visible) {
       initWalletConnect();
+    } else {
+      setQRcodeContent('');
     }
   }, [visible]);
+
+  React.useEffect(() => {
+    const handleInit = ({ uri }) => {
+      setQRcodeContent(uri);
+    };
+    eventBus.addEventListener(EVENTS.WALLETCONNECT.INITED, handleInit);
+
+    return () => {
+      eventBus.removeEventListener(EVENTS.WALLETCONNECT.INITED, handleInit);
+    };
+  }, []);
 
   React.useEffect(() => {
     if (status === 'CONNECTED') {
       message.success({
         type: 'success',
-        content: 'Connected',
+        content: t('page.newAddress.walletConnect.status.connected'),
       });
       closePopup();
     } else if (account && errorAccount && status === 'ACCOUNT_ERROR') {
@@ -101,11 +107,8 @@ export const ReconnectView: React.FC = () => {
       {currentAccount && visible && (
         <Scan
           uri={qrCodeContent}
-          bridgeURL={bridgeURL}
           onRefresh={handleRefreshQrCode}
-          defaultBridge={DEFAULT_BRIDGE}
           account={currentAccount}
-          onBridgeChange={noop}
         />
       )}
     </div>

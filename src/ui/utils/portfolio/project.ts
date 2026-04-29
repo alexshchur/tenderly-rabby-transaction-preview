@@ -16,6 +16,7 @@ import {
 import {
   PortfolioItem,
   PortfolioItemToken,
+  WithdrawAction,
 } from '@rabby-wallet/rabby-api/dist/types';
 
 export class DisplayedProject implements AbstractProject {
@@ -169,9 +170,10 @@ class DisplayedPortfolio implements AbstractPortfolio {
   netWorthChange = 0;
   _netWorthChange = '-';
   _changePercentStr = '';
+  withdrawActions?: WithdrawAction[] = [];
 
   constructor(p: PortfolioItem) {
-    this.id = `${p.pool.id}${p.position_index || ''}`;
+    this.id = `${p.pool?.id}${p.position_index || ''}`;
     this._originPortfolio = p;
     this.name = p.name;
     // this._project = project;
@@ -189,6 +191,7 @@ class DisplayedPortfolio implements AbstractPortfolio {
 
     this.netWorth = p.stats ? p.stats.net_usd_value : tokenNetWorth;
     this._netWorth = formatUsdValue(this.netWorth);
+    this.withdrawActions = p.withdraw_actions;
 
     this._tokenList = Object.values(this._tokenDict).sort((m, n) => {
       // debt 在最后面进行从大到小排序
@@ -297,6 +300,10 @@ class DisplayedPortfolio implements AbstractPortfolio {
   // static createFromHistory(h: PortfolioItem) {}
 }
 
+export function encodeProjectTokenId(token: PortfolioItemToken) {
+  return token.id + token.chain;
+}
+
 export class DisplayedToken implements AbstractPortfolioToken {
   [immerable] = true;
   id: string;
@@ -308,13 +315,18 @@ export class DisplayedToken implements AbstractPortfolioToken {
   price: number;
   decimals: number;
   display_symbol: string | null;
-  is_core: boolean;
+  is_core: boolean | null;
   is_wallet: boolean;
   name: string;
   optimized_symbol: string;
-  is_verified: boolean;
+  is_verified: boolean | null;
+  is_suspicious: boolean | undefined;
   time_at: number;
   price_24h_change?: number | null;
+  low_credit_score?: boolean;
+  raw_amount_hex_str?: string;
+  cex_ids: string[];
+  protocol_id?: string;
   _amountStr?: string;
   _priceStr?: string;
   _amountChange?: number;
@@ -332,7 +344,7 @@ export class DisplayedToken implements AbstractPortfolioToken {
   constructor(token: PortfolioItemToken) {
     this._tokenId = token.id;
     this.amount = token.amount || 0;
-    this.id = token.id + token.chain;
+    this.id = encodeProjectTokenId(token);
     this.chain = token.chain;
     this.logo_url = token.logo_url;
     this.price = token.price || 0;
@@ -348,11 +360,16 @@ export class DisplayedToken implements AbstractPortfolioToken {
     this.is_core = token.is_core;
     this.display_symbol = token.display_symbol;
     this.is_verified = token.is_verified;
+    this.is_suspicious = token.is_suspicious;
     this.optimized_symbol = token.optimized_symbol;
     this.is_wallet = token.is_wallet;
     this.name = token.name;
     this.time_at = token.time_at;
     this.price_24h_change = token.price_24h_change;
+    this.low_credit_score = token.low_credit_score;
+    this.raw_amount_hex_str = token.raw_amount_hex_str;
+    this.cex_ids = token.cex_ids || [];
+    this.protocol_id = token.protocol_id;
 
     // 默认是它
     this._usdValueChangeStr = '-';

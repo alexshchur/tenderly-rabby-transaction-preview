@@ -1,9 +1,15 @@
 import { useCommonPopupView } from '@/ui/utils';
 import clsx from 'clsx';
 import React, { useEffect } from 'react';
-import { ChainItem, ChainItemType } from './ChainItem';
+import { ChainItem, ChainItemType, sortChainWithValueDesc } from './ChainItem';
 import { DisplayChainWithWhiteLogo } from '@/ui/hooks/useCurrentBalance';
 import { Skeleton } from 'antd';
+import { useTranslation } from 'react-i18next';
+import { formatAppChain } from '@/ui/hooks/useAppChain';
+
+function shouldChainRevealed(chainItem: ChainItemType) {
+  return chainItem.percent >= 5 || chainItem.usd_value >= 1000;
+}
 
 export const ChainList = ({
   onChange,
@@ -12,7 +18,7 @@ export const ChainList = ({
   onChange(id: string | null): void;
   isTestnet?: boolean;
 }) => {
-  const { data, visible } = useCommonPopupView();
+  const { data, visible, apps } = useCommonPopupView();
   const chainList = isTestnet
     ? (data?.matteredTestnetChainBalances as DisplayChainWithWhiteLogo[]) ?? []
     : (data?.matteredChainBalances as DisplayChainWithWhiteLogo[]) ?? [];
@@ -20,12 +26,9 @@ export const ChainList = ({
     ? (data?.testnetBalance as number) ?? 0
     : (data?.balance as number) ?? 0;
   const balanceLoading = (data?.balanceLoading as boolean) ?? false;
-  const [currentChainList, setCurrentChainList] = React.useState<
-    ChainItemType[]
-  >([]);
-  const [moreChainList, setMoreChainList] = React.useState<ChainItemType[]>([]);
   const [showMore, setShowMore] = React.useState(false);
   const [activeChainId, setActiveChainId] = React.useState<string | null>(null);
+  const { t } = useTranslation();
 
   const handleSelectChain = (id?: string) => {
     if (!id || activeChainId === id) {
@@ -37,16 +40,38 @@ export const ChainList = ({
     }
   };
 
-  React.useEffect(() => {
-    const list = chainList.map((item) => {
-      return {
+  const { chainsToReveal, chainsToHide } = React.useMemo(() => {
+    const res = {
+      allItems: [] as ChainItemType[],
+      chainsToReveal: [] as ChainItemType[],
+      chainsToHide: [] as ChainItemType[],
+    };
+
+    const chainCount = chainList.length;
+    [...chainList, ...(apps?.map(formatAppChain) || [])].forEach((item) => {
+      const chainItem: ChainItemType = {
         ...item,
         percent: (item.usd_value / balance) * 100,
       };
+      res.allItems.push(chainItem);
+
+      if (chainCount <= 5 || shouldChainRevealed(chainItem)) {
+        res.chainsToReveal.push(chainItem);
+      } else {
+        res.chainsToHide.push(chainItem);
+      }
     });
-    setCurrentChainList(list.filter((item) => item.percent >= 1));
-    setMoreChainList(list.filter((item) => item.percent < 1));
-  }, [chainList, balance]);
+
+    if (res.chainsToHide.length <= 1) {
+      res.chainsToReveal = [...res.allItems];
+      res.chainsToHide = [];
+    }
+
+    res.chainsToReveal.sort(sortChainWithValueDesc);
+    res.chainsToHide.sort(sortChainWithValueDesc);
+
+    return res;
+  }, [chainList, balance, apps]);
 
   React.useEffect(() => {
     if (!visible) {
@@ -55,13 +80,13 @@ export const ChainList = ({
     }
   }, [visible]);
 
-  const moreLen = moreChainList.length;
+  const moreLen = chainsToHide.length;
 
   if (balanceLoading) {
     return (
       <Skeleton.Input
         active
-        className="block rounded-[6px] w-[360px] h-[68px] bg-gray-bg"
+        className="block rounded-[6px] w-[360px] h-[68px] bg-r-neutral-card-2"
       />
     );
   }
@@ -73,11 +98,11 @@ export const ChainList = ({
   return (
     <div
       className={clsx(
-        'bg-gray-bg2 rounded-[6px] p-[12px]',
+        'bg-r-neutral-card-1 rounded-[8px] p-[12px]',
         'flex gap-12 flex-wrap'
       )}
     >
-      {currentChainList.map((item) => (
+      {chainsToReveal.map((item) => (
         <ChainItem
           inactive={activeChainId !== null && activeChainId !== item.id}
           key={item.id}
@@ -88,7 +113,7 @@ export const ChainList = ({
         />
       ))}
       {showMore ? (
-        moreChainList.map((item) => (
+        chainsToHide.map((item) => (
           <ChainItem
             onClick={() => {
               handleSelectChain(item.id);
@@ -101,7 +126,7 @@ export const ChainList = ({
       ) : (
         <div
           className={clsx(
-            'cursor-pointer text-12 underline text-black leading-[20px]',
+            'cursor-pointer text-12 underline text-r-neutral-foot leading-[20px]',
             {
               hidden: moreLen === 0,
             }
@@ -110,7 +135,9 @@ export const ChainList = ({
             setShowMore(true);
           }}
         >
-          Unfold {moreLen} chain{moreLen > 1 ? 's' : ''}
+          {moreLen > 1
+            ? t('page.dashboard.assets.unfoldChainPlural', { moreLen })
+            : t('page.dashboard.assets.unfoldChain')}
         </div>
       )}
     </div>

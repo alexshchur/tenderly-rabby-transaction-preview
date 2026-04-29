@@ -3,11 +3,13 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useHistory } from 'react-router-dom';
 import { Approval } from 'background/service/notification';
 import { useWallet } from './WalletContext';
-import { getUiType } from './index';
 import { KEYRING_TYPE_TEXT, WALLET_BRAND_CONTENT } from '@/constant';
-import { LedgerHDPathType, LedgerHDPathTypeLabel } from '@/utils/ledger';
+import { LedgerHDPathType, LedgerHDPathTypeLabel } from '@/ui/utils/ledger';
 import { useApprovalPopup } from './approval-popup';
 import { useRabbyDispatch, useRabbySelector } from '../store';
+import { useTranslation } from 'react-i18next';
+import { useDeviceConnect } from './useDeviceConnect';
+import { isValidAddress } from '@ethereumjs/util';
 
 export const useApproval = () => {
   const wallet = useWallet();
@@ -15,6 +17,7 @@ export const useApproval = () => {
   const { showPopup, enablePopup } = useApprovalPopup();
 
   const getApproval: () => Promise<Approval> = wallet.getApproval;
+  const deviceConnect = useDeviceConnect();
 
   const resolveApproval = async (
     data?: any,
@@ -24,9 +27,15 @@ export const useApproval = () => {
   ) => {
     const approval = await getApproval();
 
+    // handle connect
+    if (!(await deviceConnect(data, approval?.data?.account))) {
+      return;
+    }
+
     if (approval) {
       wallet.resolveApproval(data, forceReject, approvalId);
     }
+
     if (stay) {
       return;
     }
@@ -40,6 +49,10 @@ export const useApproval = () => {
 
   const rejectApproval = async (err?, stay = false, isInternal = false) => {
     const approval = await getApproval();
+    if (approval?.data?.params?.data?.[0]?.isCoboSafe) {
+      wallet.coboSafeResetCurrentAccount();
+    }
+
     if (approval) {
       await wallet.rejectApproval(err, stay, isInternal);
     }
@@ -47,16 +60,6 @@ export const useApproval = () => {
       history.push('/');
     }
   };
-
-  useEffect(() => {
-    if (!getUiType().isNotification) {
-      return;
-    }
-    window.addEventListener('beforeunload', rejectApproval);
-
-    return () => window.removeEventListener('beforeunload', rejectApproval);
-  }, []);
-
   return [getApproval, resolveApproval, rejectApproval] as const;
 };
 
@@ -188,10 +191,11 @@ export type HoverProps = Pick<
 export const useHover = ({
   mouseEnterDelayMS = 0,
   mouseLeaveDelayMS = 0,
-}: UseHoverOptions = {}): [boolean, HoverProps] => {
+}: UseHoverOptions = {}): [boolean, HoverProps, () => void] => {
   const [isHovering, setIsHovering] = useState(false);
   let mouseEnterTimer: number | undefined;
   let mouseOutTimer: number | undefined;
+
   return [
     isHovering,
     {
@@ -210,6 +214,7 @@ export const useHover = ({
         );
       },
     },
+    () => setIsHovering(false),
   ];
 };
 
@@ -220,7 +225,7 @@ export const useAlias = (address: string) => {
     if (address) {
       wallet.getAlianName(address).then(setName);
     }
-  }, [address]);
+  }, [address, wallet]);
 
   const updateAlias = useCallback(
     async (alias: string) => {
@@ -231,6 +236,34 @@ export const useAlias = (address: string) => {
   );
 
   return [name, updateAlias] as const;
+};
+
+export const useCexId = (address: string) => {
+  const wallet = useWallet();
+  const { exchanges } = useRabbySelector((s) => ({
+    exchanges: s.exchange.exchanges,
+  }));
+  const [cexId, setCexId] = useState<string>();
+  useEffect(() => {
+    setCexId(undefined);
+    if (!address || !isValidAddress(address)) {
+      return;
+    }
+    wallet.getCexId(address).then(setCexId);
+  }, [address, wallet]);
+
+  const updateCexId = useCallback(
+    async (cexId: string) => {
+      await wallet.updateCexId(address, cexId);
+      setCexId(cexId);
+    },
+    [address, wallet]
+  );
+
+  return [
+    exchanges.find((e) => e.id.toLowerCase() === cexId?.toLowerCase()),
+    updateCexId,
+  ] as const;
 };
 
 export const useBalance = (address: string) => {
@@ -246,7 +279,7 @@ export const useBalance = (address: string) => {
         .getAddressCacheBalance(address)
         .then((d) => flag && setCacheBalance(d?.total_usd_value || 0));
       wallet
-        .getAddressBalance(address)
+        .getInMemoryAddressBalance(address)
         .then((d) => flag && setBalance(d.total_usd_value));
     }
     return () => {
@@ -261,24 +294,65 @@ export const useAddressSource = ({
   type,
   brandName,
   byImport = false,
+  address,
 }: {
   type: string;
   brandName: string;
   byImport?: boolean;
+  address?: string;
 }) => {
-  if (byImport === true && KEYRING_TYPE.HdKeyring === type) {
-    return 'Imported by Seed Phrase';
-  }
-  if (KEYRING_TYPE_TEXT[type]) {
-    return KEYRING_TYPE_TEXT[type];
-  }
-  if (WALLET_BRAND_CONTENT[brandName]) {
-    return WALLET_BRAND_CONTENT[brandName].name;
-  }
-  return '';
+  const { t } = useTranslation();
+  const [source, setSource] = useState<string>('');
+  const wallet = useWallet();
+
+  useEffect(() => {
+    if (byImport === true && KEYRING_TYPE.HdKeyring === type) {
+      if (address) {
+        wallet
+          .getMnemonicKeyringIfNeedPassphrase('address', address)
+          .then((needPassphrase) => {
+            if (needPassphrase) {
+              setSource(t('constant.IMPORTED_HD_KEYRING_NEED_PASSPHRASE'));
+            } else {
+              setSource(t('constant.IMPORTED_HD_KEYRING'));
+            }
+          });
+      } else {
+        setSource(t('constant.IMPORTED_HD_KEYRING'));
+      }
+      return;
+    }
+    const dict = {
+      [KEYRING_TYPE.HdKeyring]: t('constant.KEYRING_TYPE_TEXT.HdKeyring'),
+      [KEYRING_TYPE.SimpleKeyring]: t(
+        'constant.KEYRING_TYPE_TEXT.SimpleKeyring'
+      ),
+      [KEYRING_TYPE.WatchAddressKeyring]: t(
+        'constant.KEYRING_TYPE_TEXT.WatchAddressKeyring'
+      ),
+    };
+    if (dict[type]) {
+      setSource(dict[type]);
+      return;
+    }
+    if (KEYRING_TYPE_TEXT[type]) {
+      setSource(KEYRING_TYPE_TEXT[type]);
+      return;
+    }
+    if (WALLET_BRAND_CONTENT[brandName]) {
+      setSource(WALLET_BRAND_CONTENT[brandName].name);
+      return;
+    }
+  }, [type, brandName, byImport, address]);
+
+  return source;
 };
 
-export const useAccountInfo = (type: string, address: string) => {
+export const useAccountInfo = (
+  type: string,
+  address: string,
+  brand?: string
+) => {
   const wallet = useWallet();
   const [account, setAccount] = useState<{
     address: string;
@@ -289,16 +363,16 @@ export const useAccountInfo = (type: string, address: string) => {
   const dispatch = useRabbyDispatch();
   const isLedger = type === KEYRING_CLASS.HARDWARE.LEDGER;
   const isGridPlus = type === KEYRING_CLASS.HARDWARE.GRIDPLUS;
-  const isTrezorLike =
-    type === KEYRING_CLASS.HARDWARE.TREZOR ||
-    type === KEYRING_CLASS.HARDWARE.ONEKEY;
+  const isTrezor = type === KEYRING_CLASS.HARDWARE.TREZOR;
+  const isOneKey = type === KEYRING_CLASS.HARDWARE.ONEKEY;
   const isMnemonics = type === KEYRING_CLASS.MNEMONIC;
+  const isKeystone = brand === 'Keystone';
   const mnemonicAccounts = useRabbySelector((state) => state.account);
   const fetAccountInfo = useCallback(() => {
     wallet.requestKeyring(type, 'getAccountInfo', null, address).then((res) => {
       setAccount({
         ...res,
-        hdPathTypeLabel: LedgerHDPathTypeLabel[res.hdPathType],
+        hdPathTypeLabel: LedgerHDPathTypeLabel[res?.hdPathType],
       });
     });
   }, []);
@@ -317,19 +391,21 @@ export const useAccountInfo = (type: string, address: string) => {
   }, []);
 
   const fetchMnemonicsAccount = useCallback(async () => {
-    const index = (await wallet.getMnemonicAddressIndex(address)) ?? 0;
-    setAccount({
-      address,
-      index: index + 1,
-      hdPathType: LedgerHDPathType.Default,
-      hdPathTypeLabel: LedgerHDPathTypeLabel.Default,
-    });
+    const info = await wallet.getMnemonicAddressInfo(address);
+    if (info) {
+      setAccount({
+        address,
+        index: info.index + 1,
+        hdPathType: info.hdPathType,
+        hdPathTypeLabel: LedgerHDPathTypeLabel[info.hdPathType],
+      });
+    }
   }, []);
 
   useEffect(() => {
-    if (isLedger || isGridPlus) {
+    if (isLedger || isGridPlus || isKeystone || isTrezor) {
       fetAccountInfo();
-    } else if (isTrezorLike) {
+    } else if (isOneKey) {
       fetchTrezorLikeAccount();
     } else if (isMnemonics) {
       fetchMnemonicsAccount();

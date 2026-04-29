@@ -6,6 +6,14 @@ import { ReactComponent as IconArrowRight } from 'ui/assets/arrow-right-gray.svg
 import { useForm } from 'antd/lib/form/Form';
 import { useHistory } from 'react-router-dom';
 import { KEYRING_TYPE } from '@/constant';
+import { useTranslation } from 'react-i18next';
+import { useEnterPassphraseModal } from '@/ui/hooks/useEnterPassphraseModal';
+import { usePopupContainer } from '@/ui/hooks/usePopupContainer';
+import { UI_TYPE } from '@/constant/ui';
+import { obj2query } from '@/ui/utils/url';
+import { useCheckSeedPhraseBackup } from '@/ui/utils/useCheckSeedPhraseBackup';
+import clsx from 'clsx';
+import { ReactComponent as RcIconInfoCC } from '@/ui/assets/dashboard/warning-cc.svg';
 
 type Props = {
   address: string;
@@ -13,23 +21,38 @@ type Props = {
   brandName?: string;
 };
 export const AddressBackup = ({ address, type }: Props) => {
+  const { t } = useTranslation();
   const wallet = useWallet();
   const history = useHistory();
+  const { getContainer } = usePopupContainer();
 
   const [form] = useForm();
 
-  if (![KEYRING_TYPE.HdKeyring, KEYRING_TYPE.SimpleKeyring].includes(type)) {
+  if (
+    ![KEYRING_TYPE.HdKeyring, KEYRING_TYPE.SimpleKeyring].includes(type as any)
+  ) {
     return null;
   }
+  const invokeEnterPassphrase = useEnterPassphraseModal('address');
+
+  const { hasBackup } = useCheckSeedPhraseBackup(address);
 
   const handleBackup = async (path: 'mneonics' | 'private-key') => {
     form.resetFields();
     let data = '';
+
     await AuthenticationModalPromise({
-      confirmText: 'Confirm',
-      cancelText: 'Cancel',
-      title: `Backup ${path === 'private-key' ? 'Private Key' : 'Seed Phrase'}`,
+      confirmText: t('global.confirm'),
+      cancelText: t('global.Cancel'),
+      title:
+        path === 'private-key'
+          ? t('page.addressDetail.backup-private-key')
+          : t('page.addressDetail.backup-seed-phrase'),
       validationHandler: async (password: string) => {
+        if (type === KEYRING_TYPE.HdKeyring) {
+          await invokeEnterPassphrase(address);
+        }
+
         if (path === 'private-key') {
           data = await wallet.getPrivateKey(password, {
             address,
@@ -40,16 +63,31 @@ export const AddressBackup = ({ address, type }: Props) => {
         }
       },
       onFinished() {
-        history.push({
-          pathname: `/settings/address-backup/${path}`,
-          state: {
-            data: data,
-          },
-        });
+        if (UI_TYPE.isDesktop) {
+          history.push({
+            pathname: `${history.location.pathname}`,
+            search: `?${obj2query({
+              action: 'address-backup',
+              backupType: path,
+            })}`,
+            state: {
+              data: data,
+            },
+          });
+        } else {
+          history.push({
+            pathname: `/settings/address-backup/${path}`,
+            state: {
+              data: data,
+              goBack: true,
+            },
+          });
+        }
       },
       onCancel() {
         // do nothing
       },
+      getContainer,
       wallet,
     });
   };
@@ -64,7 +102,21 @@ export const AddressBackup = ({ address, type }: Props) => {
           }}
         >
           <div className="rabby-list-item-content">
-            <div className="rabby-list-item-label">Backup Seed Phrase</div>
+            <div className="rabby-list-item-label">
+              {t('page.addressDetail.backup-seed-phrase')}
+            </div>
+            {hasBackup ? null : (
+              <div
+                className={clsx(
+                  'text-[13px] leading-[16px] font-medium text-r-red-default',
+                  'py-[4px] px-[10px] bg-r-red-light rounded-[4px]',
+                  'flex items-center gap-[4px] mx-[4px]'
+                )}
+              >
+                <RcIconInfoCC />
+                {t('page.addressDetail.notBackup')}
+              </div>
+            )}
             <div className="rabby-list-item-arrow">
               <IconArrowRight
                 width={16}
@@ -82,7 +134,9 @@ export const AddressBackup = ({ address, type }: Props) => {
         }}
       >
         <div className="rabby-list-item-content">
-          <div className="rabby-list-item-label">Backup Private Key</div>
+          <div className="rabby-list-item-label">
+            {t('page.addressDetail.backup-private-key')}
+          </div>
           <div className="rabby-list-item-arrow">
             <IconArrowRight
               width={16}

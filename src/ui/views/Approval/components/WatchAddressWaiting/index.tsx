@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { matomoRequestEvent } from '@/utils/matomo-request';
-import { DEFAULT_BRIDGE } from '@rabby-wallet/eth-walletconnect-keyring';
 import { Account } from 'background/service/preference';
 import {
   CHAINS,
   WALLETCONNECT_STATUS_MAP,
   EVENTS,
   KEYRING_CATEGORY_MAP,
+  CHAINS_ENUM,
 } from 'consts';
 import { useApproval, useCommonPopupView, useWallet } from 'ui/utils';
 import eventBus from '@/eventBus';
@@ -15,20 +16,37 @@ import Scan from './Scan';
 import { message } from 'antd';
 import { useSessionStatus } from '@/ui/component/WalletConnect/useSessionStatus';
 import { adjustV } from '@/ui/utils/gnosis';
-import { findChainByEnum } from '@/utils/chain';
+import { findChain, findChainByEnum } from '@/utils/chain';
+import { emitSignComponentAmounted } from '@/utils/signEvent';
+import { ga4 } from '@/utils/ga4';
 
 interface ApprovalParams {
   address: string;
   chainId?: number;
+  nonce?: string;
+  from?: string;
   isGnosis?: boolean;
   data?: string[];
   account?: Account;
   $ctx?: any;
   extra?: Record<string, any>;
   signingTxId?: string;
+  safeMessage?: {
+    safeMessageHash: string;
+    safeAddress: string;
+    message: string;
+    chainId: number;
+  };
+  stay?: boolean;
 }
 
-const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
+const WatchAddressWaiting = ({
+  params,
+  account: $account,
+}: {
+  params: ApprovalParams;
+  account: Account;
+}) => {
   const { setHeight, setVisible, closePopup } = useCommonPopupView();
   const wallet = useWallet();
   const [connectStatus, setConnectStatus] = useState(
@@ -41,11 +59,11 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
   const [qrcodeContent, setQrcodeContent] = useState('');
   const [result, setResult] = useState('');
   const [getApproval, resolveApproval, rejectApproval] = useApproval();
-  const chain = Object.values(CHAINS).find(
-    (item) => item.id === (params.chainId || 1)
-  )!.enum;
+  const chain =
+    findChain({
+      id: params.chainId || 1,
+    })?.enum || CHAINS_ENUM.ETH;
   const isSignTextRef = useRef(false);
-  const [bridgeURL, setBridge] = useState<string>(DEFAULT_BRIDGE);
   const [currentAccount, setCurrentAccount] = useState<Account | null>(null);
   const explainRef = useRef<any | null>(null);
   const [signFinishedData, setSignFinishedData] = useState<{
@@ -54,18 +72,19 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
   }>();
   const [isClickDone, setIsClickDone] = useState(false);
   const { status: sessionStatus } = useSessionStatus(currentAccount!);
+  const { t } = useTranslation();
 
   const initWalletConnect = async () => {
-    const account = params.isGnosis
-      ? params.account!
-      : (await wallet.syncGetCurrentAccount())!;
+    const account = params.isGnosis ? params.account! : $account;
     const status = await wallet.getWalletConnectStatus(
       account.address,
       account.brandName
     );
-    setConnectStatus(
-      status === null ? WALLETCONNECT_STATUS_MAP.PENDING : status
-    );
+    if (status) {
+      setConnectStatus(
+        status === null ? WALLETCONNECT_STATUS_MAP.PENDING : status
+      );
+    }
     eventBus.addEventListener(EVENTS.WALLETCONNECT.INITED, ({ uri }) => {
       setQrcodeContent(uri);
     });
@@ -74,7 +93,7 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
     explainRef.current = signingTx?.explain;
     if (
       status !== WALLETCONNECT_STATUS_MAP.CONNECTED &&
-      status !== WALLETCONNECT_STATUS_MAP.SIBMITTED
+      status !== WALLETCONNECT_STATUS_MAP.SUBMITTED
     ) {
       eventBus.emit(EVENTS.broadcastToBackground, {
         method: EVENTS.WALLETCONNECT.INIT,
@@ -87,16 +106,13 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
     rejectApproval('user cancel');
   };
 
-  const handleRetry = async () => {
-    // const account = params.isGnosis
-    //   ? params.account!
-    //   : (await wallet.syncGetCurrentAccount())!;
-    // await wallet.killWalletConnectConnector(account.address, account.brandName);
-    // await initWalletConnect();
-    setConnectStatus(WALLETCONNECT_STATUS_MAP.PENDING);
+  const handleRetry = async (retry?: boolean) => {
+    const account = params.isGnosis ? params.account! : $account;
+    setConnectStatus(WALLETCONNECT_STATUS_MAP.WAITING);
     setConnectError(null);
-    wallet.resendWalletConnect();
-    message.success('Request successfully sent.');
+    wallet.resendSign(retry);
+    message.success(t('page.signFooterBar.walletConnect.requestSuccessToast'));
+    emitSignComponentAmounted();
   };
 
   const handleRefreshQrCode = () => {
@@ -105,15 +121,9 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
 
   const init = async () => {
     const approval = await getApproval();
-    const account = params.isGnosis
-      ? params.account!
-      : (await wallet.syncGetCurrentAccount())!;
-    const bridge = await wallet.getWalletConnectBridge(
-      account.address,
-      account.brandName
-    );
+    const account = params.isGnosis ? params.account! : $account;
+
     setCurrentAccount(account);
-    setBridge(bridge || DEFAULT_BRIDGE);
 
     let isSignTriggered = false;
     const isText = params.isGnosis
@@ -128,12 +138,20 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
         try {
           if (params.isGnosis) {
             sig = adjustV('eth_signTypedData', sig);
-            const sigs = await wallet.getGnosisTransactionSignatures();
-            if (sigs.length > 0) {
-              await wallet.gnosisAddConfirmation(account.address, sig);
+            const safeMessage = params.safeMessage;
+            if (safeMessage) {
+              await wallet.handleGnosisMessage({
+                signature: data.data,
+                signerAddress: params.account!.address!,
+              });
             } else {
-              await wallet.gnosisAddSignature(account.address, sig);
-              await wallet.postGnosisTransaction();
+              const sigs = await wallet.getGnosisTransactionSignatures();
+              if (sigs.length > 0) {
+                await wallet.gnosisAddConfirmation(account.address, sig);
+              } else {
+                await wallet.gnosisAddSignature(account.address, sig);
+                await wallet.postGnosisTransaction();
+              }
             }
           }
         } catch (e) {
@@ -150,19 +168,18 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
             //   address: from,
             //   chainId: Number(chainId),
             // });
-
-            wallet.reportStats('signedTransaction', {
-              type: account.brandName,
-              chainId: findChainByEnum(chain)?.serverId || '',
-              category: KEYRING_CATEGORY_MAP[account.type],
-              success: true,
-              preExecSuccess: explain
-                ? explain?.calcSuccess && explain?.pre_exec.success
-                : true,
-              createBy: params?.$ctx?.ga ? 'rabby' : 'dapp',
-              source: params?.$ctx?.ga?.source || '',
-              trigger: params?.$ctx?.ga?.trigger || '',
-            });
+            //   wallet.reportStats('signedTransaction', {
+            //     type: account.brandName,
+            //     chainId: findChainByEnum(chain)?.serverId || '',
+            //     category: KEYRING_CATEGORY_MAP[account.type],
+            //     success: true,
+            //     preExecSuccess: explain
+            //       ? explain?.calcSuccess && explain?.pre_exec.success
+            //       : true,
+            //     createdBy: params?.$ctx?.ga ? 'rabby' : 'dapp',
+            //     source: params?.$ctx?.ga?.source || '',
+            //     trigger: params?.$ctx?.ga?.trigger || '',
+            //   });
           }
         }
         setSignFinishedData({
@@ -180,19 +197,18 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
             //   address: from,
             //   chainId: Number(chainId),
             // });
-
-            wallet.reportStats('signedTransaction', {
-              type: account.brandName,
-              chainId: findChainByEnum(chain)?.serverId || '',
-              category: KEYRING_CATEGORY_MAP[account.type],
-              success: false,
-              preExecSuccess: explain
-                ? explain?.calcSuccess && explain?.pre_exec.success
-                : true,
-              createBy: params?.$ctx?.ga ? 'rabby' : 'dapp',
-              source: params?.$ctx?.ga?.source || '',
-              trigger: params?.$ctx?.ga?.trigger || '',
-            });
+            // wallet.reportStats('signedTransaction', {
+            //   type: account.brandName,
+            //   chainId: findChainByEnum(chain)?.serverId || '',
+            //   category: KEYRING_CATEGORY_MAP[account.type],
+            //   success: false,
+            //   preExecSuccess: explain
+            //     ? explain?.calcSuccess && explain?.pre_exec.success
+            //     : true,
+            //   createdBy: params?.$ctx?.ga ? 'rabby' : 'dapp',
+            //   source: params?.$ctx?.ga?.source || '',
+            //   trigger: params?.$ctx?.ga?.trigger || '',
+            // });
           }
         }
         rejectApproval(data.errorMsg);
@@ -205,14 +221,15 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
         setVisible(true);
         setConnectStatus(status);
         if (
-          status !== WALLETCONNECT_STATUS_MAP.FAILD &&
+          status !== WALLETCONNECT_STATUS_MAP.FAILED &&
           status !== WALLETCONNECT_STATUS_MAP.REJECTED
         ) {
           if (!isText && !isSignTriggered) {
             const explain = explainRef.current;
+            const chainInfo = findChainByEnum(chain);
 
             // const tx = approval.data?.params;
-            if (explain) {
+            if (explain || chainInfo?.isTestnet) {
               // const { nonce, from, chainId } = tx;
               // const explain = await wallet.getExplainCache({
               //   nonce: Number(nonce),
@@ -222,21 +239,34 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
 
               wallet.reportStats('signTransaction', {
                 type: account.brandName,
-                chainId: findChainByEnum(chain)?.serverId || '',
+                chainId: chainInfo?.serverId || '',
                 category: KEYRING_CATEGORY_MAP[account.type],
                 preExecSuccess: explain
                   ? explain?.calcSuccess && explain?.pre_exec.success
                   : true,
-                createBy: params?.$ctx?.ga ? 'rabby' : 'dapp',
+                createdBy: params?.$ctx?.ga ? 'rabby' : 'dapp',
                 source: params?.$ctx?.ga?.source || '',
                 trigger: params?.$ctx?.ga?.trigger || '',
+                networkType: chainInfo?.isTestnet
+                  ? 'Custom Network'
+                  : 'Integrated Network',
               });
             }
             matomoRequestEvent({
               category: 'Transaction',
               action: 'Submit',
-              label: account.brandName,
+              label: chainInfo?.isTestnet
+                ? 'Custom Network'
+                : 'Integrated Network',
             });
+
+            ga4.fireEvent(
+              `Submit_${chainInfo?.isTestnet ? 'Custom' : 'Integrated'}`,
+              {
+                event_category: 'Transaction',
+              }
+            );
+
             isSignTriggered = true;
           }
           if (isText && !isSignTriggered) {
@@ -251,46 +281,46 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
         switch (status) {
           case WALLETCONNECT_STATUS_MAP.CONNECTED:
             break;
-          case WALLETCONNECT_STATUS_MAP.FAILD:
+          case WALLETCONNECT_STATUS_MAP.FAILED:
           case WALLETCONNECT_STATUS_MAP.REJECTED:
             if (payload?.code) {
-              setConnectError({ code: payload.code });
+              try {
+                const error = JSON.parse(payload.message);
+                setConnectError({
+                  code: payload.code,
+                  message: error.message,
+                });
+              } catch (e) {
+                setConnectError(payload);
+              }
             } else {
               setConnectError(
                 (payload?.params && payload.params[0]) || payload
               );
             }
             break;
-          case WALLETCONNECT_STATUS_MAP.SIBMITTED:
+          case WALLETCONNECT_STATUS_MAP.SUBMITTED:
             setResult(payload);
             break;
         }
       }
     );
-    initWalletConnect();
-  };
-
-  const handleBridgeChange = async (val: string) => {
-    const account = params.isGnosis
-      ? params.account!
-      : (await wallet.syncGetCurrentAccount())!;
-    setBridge(val);
-    eventBus.removeAllEventListeners(EVENTS.WALLETCONNECT.INITED);
-    initWalletConnect();
-    wallet.setWalletConnectBridge(account.address, account.brandName, val);
+    await initWalletConnect();
+    emitSignComponentAmounted();
   };
 
   useEffect(() => {
     init();
-    setHeight(340);
+    setHeight('fit-content');
   }, []);
 
+  const { stay = false } = params || {};
   useEffect(() => {
     if (signFinishedData && isClickDone) {
       closePopup();
       resolveApproval(
         signFinishedData.data,
-        false,
+        stay,
         false,
         signFinishedData.approvalId
       );
@@ -300,7 +330,7 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
   useEffect(() => {
     if (sessionStatus === 'DISCONNECTED') {
       setVisible(false);
-      message.error('Your wallet is not connected. Please re-connect.');
+      message.error(t('page.signFooterBar.ledger.notConnected'));
     }
   }, [sessionStatus]);
 
@@ -312,10 +342,7 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
         currentAccount ? (
           <Scan
             uri={qrcodeContent}
-            bridgeURL={bridgeURL}
-            onBridgeChange={handleBridgeChange}
             onRefresh={handleRefreshQrCode}
-            defaultBridge={DEFAULT_BRIDGE}
             account={currentAccount}
           />
         ) : (
@@ -329,6 +356,9 @@ const WatchAddressWaiting = ({ params }: { params: ApprovalParams }) => {
               onCancel={handleCancel}
               account={currentAccount}
               onDone={() => setIsClickDone(true)}
+              chainId={params?.chainId}
+              nonce={params?.nonce}
+              from={params?.from}
             />
           )
         )}

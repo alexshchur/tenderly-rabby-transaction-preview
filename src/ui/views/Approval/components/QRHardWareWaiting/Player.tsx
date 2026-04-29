@@ -1,15 +1,34 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode.react';
 import { UR, UREncoder } from '@ngraveio/bc-ur';
+import { useTranslation, Trans } from 'react-i18next';
 import { Button } from 'antd';
 import clsx from 'clsx';
 
-const Player = ({ type, cbor, onSign, brandName }) => {
+interface IProps {
+  type: string;
+  cbor: string;
+  onSign: () => void;
+  brandName: string;
+  playerSize?: number;
+  layoutStyle?: 'compact' | 'normal';
+}
+
+const Player = ({
+  type,
+  cbor,
+  onSign,
+  brandName,
+  playerSize,
+  layoutStyle = 'compact',
+}: IProps) => {
   const urEncoder = useMemo(
-    () => new UREncoder(new UR(Buffer.from(cbor, 'hex'), type), 400),
+    // For NGRAVE ZERO support please keep to a maximum fragment size of 200
+    () => new UREncoder(new UR(Buffer.from(cbor, 'hex'), type), 200),
     [cbor, type]
   );
   const [currentQRCode, setCurrentQRCode] = useState(urEncoder.nextPart());
+  const { t } = useTranslation();
   useEffect(() => {
     const id = setInterval(() => {
       setCurrentQRCode(urEncoder.nextPart());
@@ -22,22 +41,37 @@ const Player = ({ type, cbor, onSign, brandName }) => {
   return (
     <div className="flex flex-col items-center">
       <div className="p-[5px] border border-gray-divider rounded-[8px] bg-white">
-        <QRCode value={currentQRCode.toUpperCase()} size={180} />
+        <QRCode value={currentQRCode.toUpperCase()} size={playerSize ?? 260} />
       </div>
-      <p className="text-13 leading-[18px] mb-0 mt-6 text-gray-subTitle font-medium text-center whitespace-nowrap">
-        Scan with your {brandName} to sign<br></br>After signing, click the
-        button below to receive the signature
+      <p
+        className={clsx(
+          layoutStyle === 'normal' ? 'mt-20' : 'mt-6',
+          brandName === 'Keystone' ? '' : 'whitespace-nowrap',
+          'text-13 leading-[18px] mb-0 text-r-neutral-body font-medium text-center'
+        )}
+      >
+        <Trans
+          i18nKey={
+            brandName === 'Keystone'
+              ? 'page.signFooterBar.keystone.qrcodeDesc'
+              : 'page.signFooterBar.qrcode.qrcodeDesc'
+          }
+          values={{
+            brand: brandName,
+          }}
+        ></Trans>
       </p>
 
       <Button
         onClick={onSign}
         className={clsx(
-          'w-[180px] h-[40px] mt-6',
-          'active:before:bg-[#00000033]'
+          'w-[180px] h-[40px]',
+          'active:before:bg-[#00000033]',
+          layoutStyle === 'normal' ? 'mt-20' : 'mt-6'
         )}
         type="primary"
       >
-        Get signature
+        {t('page.signFooterBar.qrcode.getSig')}
       </Button>
     </div>
   );

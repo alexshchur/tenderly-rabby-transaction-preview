@@ -7,15 +7,18 @@ import {
   WALLET_SORT_SCORE,
 } from '@/constant';
 import { IDisplayedAccountWithBalance } from '@/ui/models/accountToDisplay';
-import { useRabbySelector } from '@/ui/store';
+import { useRabbyDispatch, useRabbySelector } from '@/ui/store';
 import { useWallet } from '@/ui/utils';
 import { sortAccountsByBalance } from '@/ui/utils/account';
 import { groupBy, omit } from 'lodash';
 import { nanoid } from 'nanoid';
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useHistory } from 'react-router-dom';
 import { useAsync } from 'react-use';
 import AuthenticationModalPromise from '@/ui/component/AuthenticationModal';
+import i18n from '@/i18n';
+import { useTranslation } from 'react-i18next';
+import { useEnterPassphraseModal } from '@/ui/hooks/useEnterPassphraseModal';
 
 export type DisplayedAccount = IDisplayedAccountWithBalance & {
   hdPathBasePublicKey?: string;
@@ -35,14 +38,17 @@ export type TypeKeyringGroup = {
 
 export const getWalletTypeName = (s: string) => {
   if (s === KEYRING_TYPE['SimpleKeyring']) {
-    return 'Private Key';
+    return i18n.t('page.manageAddress.private-key');
   }
   if (s === KEYRING_TYPE['HdKeyring']) {
-    return 'Seed Phrase';
+    return i18n.t('page.manageAddress.seed-phrase');
   }
 
   if (WALLET_BRAND_CONTENT[s]) {
     return WALLET_BRAND_CONTENT[s].name;
+  }
+  if (s === KEYRING_CLASS.WATCH) {
+    return i18n.t('page.manageAddress.watch-address');
   }
 
   return s;
@@ -98,12 +104,16 @@ const sortScore = [
   }
 );
 
-const getWalletScore = (s: TypeKeyringGroup[]) => {
+export const getWalletScore = (
+  s: TypeKeyringGroup[] | IDisplayedAccountWithBalance[]
+) => {
   return sortScore[s?.[0]?.brandName || s?.[0]?.type] || DEFAULT_SCORE;
 };
 
 export const useWalletTypeData = () => {
+  const { t } = useTranslation();
   const wallet = useWallet();
+  const dispatch = useRabbyDispatch();
   const {
     accountsList,
     highlightedAddresses = [],
@@ -227,7 +237,7 @@ export const useWalletTypeData = () => {
     if (watchSortedAccountsList.length) {
       v.push([
         {
-          name: 'Watch Address',
+          name: t('page.manageAddress.watch-address'),
           list: watchSortedAccountsList,
           type: KEYRING_TYPE['WatchAddressKeyring'],
         },
@@ -254,6 +264,15 @@ export const useWalletTypeData = () => {
     return [result, sortIdList.current] as const;
   }, [sortedAccountsList, watchSortedAccountsList, wallet]);
 
+  useEffect(() => {
+    dispatch.accountToDisplay.getAllAccountsToDisplay()?.catch((e) => {
+      console.error('getAllAccountsToDisplay error', e);
+    });
+    dispatch.addressManagement.getHilightedAddressesAsync()?.catch((e) => {
+      console.error('getHilightedAddressesAsync error', e);
+    });
+  }, []);
+
   if (error) {
     console.error('manage address', error);
   }
@@ -268,15 +287,18 @@ export const useWalletTypeData = () => {
 export const useBackUp = () => {
   const wallet = useWallet();
   const history = useHistory();
+  const { t } = useTranslation();
+  const invokeEnterPassphrase = useEnterPassphraseModal('publickey');
 
   const handleBackup = useCallback(
     async (publicKey: string, index) => {
       await AuthenticationModalPromise({
-        confirmText: 'Confirm',
-        cancelText: 'Cancel',
-        title: 'Backup Seed Phrase',
+        confirmText: t('page.manageAddress.confirm'),
+        cancelText: t('page.manageAddress.cancel'),
+        title: t('page.manageAddress.backup-seed-phrase'),
 
         async onFinished() {
+          await invokeEnterPassphrase(publicKey);
           const data = await wallet.getMnemonicFromPublicKey(publicKey);
           history.replace({
             search: `?index=${index}`,

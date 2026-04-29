@@ -1,29 +1,40 @@
-import { Input } from 'antd';
-import React from 'react';
 import { ReactComponent as SearchSVG } from '@/ui/assets/search.svg';
+import { useCommonPopupView } from '@/ui/utils';
+import { Input, InputRef } from 'antd';
 import clsx from 'clsx';
+import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { useDebounce } from 'react-use';
 import styled from 'styled-components';
-import { useCommonPopupView } from '@/ui/utils';
 
 export interface Props {
   onSearch?: (value: string) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  className?: string;
+  placeholder?: string;
 }
 
 const InputStyled = styled(Input)`
+  background-color: var(--r-neutral-card1, #fff) !important;
   &.ant-input-affix-wrapper-focused {
-    border-color: #8697ff !important;
+    border-color: var(--r-blue-default, #7084ff) !important;
   }
   &:hover {
-    border-color: #8697ff !important;
+    border-color: var(--r-blue-default, #7084ff) !important;
+  }
+
+  input::placeholder {
+    font-size: 12px;
+    color: var(--r-neutral-foot, #6a7587);
   }
 `;
 
-export const TokenSearchInput = React.forwardRef<Input, Props>(
-  ({ onSearch }, ref) => {
+export const TokenSearchInput = React.forwardRef<InputRef, Props>(
+  ({ onSearch, onBlur, onFocus, className, placeholder }, ref) => {
     const [input, setInput] = React.useState<string>('');
-    const [isFocus, setIsFocus] = React.useState<boolean>(false);
     const { visible } = useCommonPopupView();
+    const { t } = useTranslation();
 
     React.useEffect(() => {
       if (!visible) {
@@ -43,16 +54,17 @@ export const TokenSearchInput = React.forwardRef<Input, Props>(
       <InputStyled
         ref={ref}
         onChange={(e) => setInput(e.target.value)}
-        placeholder="Tokens"
-        onFocus={() => setIsFocus(true)}
-        onBlur={() => setIsFocus(false)}
+        placeholder={
+          placeholder || t('page.dashboard.assets.searchPlaceholder')
+        }
+        onFocus={onFocus}
+        onBlur={onBlur}
+        allowClear
         className={clsx(
           'text-12 text-black py-0 px-[9px] h-[32px]',
-          'border border-gray-divider rounded-[6px]',
-          'transform-none w-[160px]',
-          {
-            'w-[248px]': isFocus || input,
-          }
+          'rounded-[6px]',
+          'transform-none',
+          className
         )}
         prefix={<SearchSVG className="w-[14px] h-[14px]" />}
       />

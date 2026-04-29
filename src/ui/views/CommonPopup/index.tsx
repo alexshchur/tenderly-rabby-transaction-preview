@@ -6,7 +6,11 @@ import { ReconnectView } from '@/ui/component/WalletConnect/ReconnectView';
 import { SwitchAddress } from './SwitchAddress';
 import { SwitchChain } from './SwitchChain';
 import { Ledger } from './Ledger';
+import { Keystone } from './Keystone';
 import { AssetList } from './AssetList/AssetList';
+import { CancelApproval } from './CancelApproval/CancelApproval';
+import { CancelConnect } from './CancelConnect/CancelConnect';
+import { ImKeyPermission } from './ImKeyPermission';
 
 export type CommonPopupComponentName =
   | 'Approval'
@@ -14,18 +18,52 @@ export type CommonPopupComponentName =
   | 'SwitchAddress'
   | 'SwitchChain'
   | 'AssetList'
-  | 'Ledger';
+  | 'Ledger'
+  | 'ImKeyPermission'
+  | 'Keystone'
+  | 'CancelConnect'
+  | 'CancelApproval';
 
 const ComponentConfig = {
   AssetList: {
     title: null,
     closeable: false,
-    padding: '12px 20px',
+    titleSize: '16px',
+    // padding: '12px 20px',
+    padding: '0',
+    isNew: true,
   },
   Default: {
     title: undefined,
     closeable: true,
+    titleSize: '16px',
     padding: '20px 20px 24px',
+    isNew: true,
+  },
+  Approval: {
+    closeable: false,
+    titleSize: '15px',
+    maskClosable: false,
+    padding: '16px',
+    isNew: true,
+  },
+  CancelApproval: {
+    padding: '8px 20px 22px',
+    titleSize: '20px',
+    closeable: true,
+    isNew: true,
+  },
+  CancelConnect: {
+    padding: '8px 20px 22px',
+    titleSize: '20px',
+    closeable: true,
+    isNew: true,
+  },
+  Ledger: {
+    closeable: true,
+    titleSize: '20px',
+    padding: '20px 10px 24px',
+    isNew: true,
   },
 };
 
@@ -37,6 +75,7 @@ export const CommonPopup: React.FC = () => {
     height,
     className,
     componentName,
+    popupProps,
   } = useCommonPopupView();
 
   const config =
@@ -51,10 +90,18 @@ export const CommonPopup: React.FC = () => {
     <Popup
       title={
         config.title ? (
-          <span className="text-[16px]">{config.title}</span>
+          <span
+            style={{
+              fontSize: config.titleSize,
+            }}
+          >
+            {config.title}
+          </span>
         ) : null
       }
+      mask={height !== 0}
       closable={config.closeable}
+      maskClosable={config.maskClosable}
       height={height}
       onClose={() => setVisible(false)}
       visible={visible && !!componentName}
@@ -64,13 +111,27 @@ export const CommonPopup: React.FC = () => {
       bodyStyle={{
         padding: config.padding,
       }}
+      isSupportDarkMode
+      isNew={config.isNew}
+      {...popupProps}
     >
       {componentName === 'Approval' && <Approval className="h-full" />}
       {componentName === 'WalletConnect' && <ReconnectView />}
       {componentName === 'SwitchAddress' && <SwitchAddress />}
       {componentName === 'SwitchChain' && <SwitchChain />}
       {componentName === 'Ledger' && <Ledger />}
-      {componentName === 'AssetList' && <AssetList visible={visible} />}
+      {componentName === 'ImKeyPermission' && <ImKeyPermission />}
+      {componentName === 'Keystone' && <Keystone />}
+      {componentName === 'AssetList' && (
+        <AssetList
+          visible={visible}
+          onClose={() => {
+            setVisible(false);
+          }}
+        />
+      )}
+      {componentName === 'CancelApproval' && <CancelApproval />}
+      {componentName === 'CancelConnect' && <CancelConnect />}
     </Popup>
   );
 };

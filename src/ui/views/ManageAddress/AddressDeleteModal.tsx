@@ -9,35 +9,46 @@ import { Button } from 'antd';
 import React, { useMemo } from 'react';
 import { IDisplayedAccountWithBalance } from 'ui/models/accountToDisplay';
 import { ReactComponent as IconDelete } from '@/ui/assets/address/red-delete.svg';
+import { useTranslation } from 'react-i18next';
+import ThemeIcon from '@/ui/component/ThemeMode/ThemeIcon';
+import { useThemeMode } from '@/ui/hooks/usePreference';
+import { pickKeyringThemeIcon } from '@/utils/account';
 
 type DelectModalProps = {
   visible: boolean;
   onClose(): void;
   onSubmit(): void;
+  loading?: boolean;
 };
 export const AddressDeleteModal = ({
   visible,
   onClose,
   onSubmit,
+  loading = false,
   item,
   count,
 }: DelectModalProps & {
   item: IDisplayedAccountWithBalance;
   count: number;
 }) => {
+  const { t } = useTranslation();
   const { address, brandName, type } = item;
   const brandIcon = useWalletConnectIcon({
     address,
     brandName,
     type,
   });
+  const { isDarkTheme } = useThemeMode();
 
   const addressTypeIcon = useMemo(
     () =>
       brandIcon ||
+      pickKeyringThemeIcon(type as any, isDarkTheme) ||
       KEYRING_ICONS[type] ||
+      pickKeyringThemeIcon(brandName as any, isDarkTheme) ||
+      WALLET_BRAND_CONTENT?.[brandName]?.maybeSvg ||
       WALLET_BRAND_CONTENT?.[brandName]?.image,
-    [type, brandName, brandIcon]
+    [type, brandName, brandIcon, isDarkTheme]
   );
   const renderBrand = useMemo(() => {
     if (brandName && WALLET_BRAND_CONTENT[brandName]) {
@@ -46,20 +57,29 @@ export const AddressDeleteModal = ({
       return BRAND_ALIAN_TYPE_TEXT[type];
     }
     return type;
-  }, [brandName]);
+  }, [type, brandName]);
 
   return (
     <Popup visible={visible} title={null} height={220} onClose={onClose}>
       <div className="flex items-center relative w-[48px] h-[48px] mx-auto">
-        <img src={addressTypeIcon} className="w-[48px] h-[48px]" />
+        <ThemeIcon src={addressTypeIcon} className="w-[48px] h-[48px]" />
         <IconDelete className="absolute -bottom-4 -right-4" />
       </div>
-      <div className="text-center mt-20 mb-[36px] text-gray-title text-20 font-medium">
-        Delete {count} {renderBrand} {count > 1 ? 'addresses' : 'address'}
+      <div className="text-center mt-20 mb-[36px] text-r-neutral-title-1 text-20 font-medium">
+        {t('page.manageAddress.delete-title', {
+          count,
+          brand: renderBrand,
+        })}
       </div>
       <footer className="flex gap-[16px]">
-        <Button type="primary" size="large" block onClick={onClose}>
-          Cancel
+        <Button
+          type="primary"
+          size="large"
+          block
+          onClick={onClose}
+          disabled={loading}
+        >
+          {t('page.manageAddress.cancel')}
         </Button>
         <Button
           onClick={onSubmit}
@@ -68,8 +88,10 @@ export const AddressDeleteModal = ({
           size="large"
           className={'rabby-btn-ghost'}
           block
+          loading={loading}
+          disabled={loading}
         >
-          Confirm Delete
+          {t('page.manageAddress.confirm-delete')}
         </Button>
       </footer>
     </Popup>

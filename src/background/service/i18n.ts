@@ -1,17 +1,41 @@
 import i18n from 'i18next';
+import browser from 'webextension-polyfill';
+import { LANGS } from '@/constant';
+
+export const getFirstPreferredLangCode = async () => {
+  let userPreferredLocaleCodes: string[];
+
+  try {
+    userPreferredLocaleCodes = await browser.i18n.getAcceptLanguages();
+  } catch (e) {
+    userPreferredLocaleCodes = [];
+  }
+  if (!userPreferredLocaleCodes) {
+    userPreferredLocaleCodes = [];
+  }
+  let firstPreferredLangCode = 'en';
+  for (const code of userPreferredLocaleCodes) {
+    const lang = LANGS.find((item) => {
+      return (
+        code.toLowerCase() === item.code.toLowerCase() ||
+        item.code.toLowerCase() === code.toLowerCase().split('-')[0]
+      );
+    });
+    if (lang) {
+      firstPreferredLangCode = lang.code;
+      break;
+    }
+  }
+  return firstPreferredLangCode || 'en';
+};
 
 export const fetchLocale = async (locale) => {
-  const res = await window.fetch(`./_locales/${locale}/messages.json`);
+  const res = await fetch(`./locales/${locale}/messages.json`);
   const data: Record<
     string,
     { message: string; description: string }
   > = await res.json();
-  return Object.keys(data).reduce((res, key) => {
-    return {
-      ...res,
-      [key.replace(/__/g, ' ')]: data[key].message,
-    };
-  }, {});
+  return data;
 };
 
 i18n.init({
@@ -20,6 +44,8 @@ i18n.init({
   interpolation: {
     escapeValue: false, // react already safes from xss
   },
+  returnNull: false,
+  returnEmptyString: false,
 });
 
 export const I18N_NS = 'translations';

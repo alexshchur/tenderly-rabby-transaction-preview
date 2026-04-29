@@ -4,12 +4,16 @@ import { RootModel } from '.';
 import { DisplayedKeryring } from '@/background/service/keyring';
 import { sortAccountsByBalance } from '../utils/account';
 import PQueue from 'p-queue';
+import { TotalBalanceResponse } from '@/background/service/openapi';
+import { filterMyAccounts } from '@/utils/account';
 
 type IDisplayedAccount = Required<DisplayedKeryring['accounts'][number]>;
 export type IDisplayedAccountWithBalance = IDisplayedAccount & {
   balance: number;
   byImport?: boolean;
   publicKey?: string;
+  hdPathBasePublicKey?: string;
+  hdPathType?: string;
 };
 
 type IState = {
@@ -34,8 +38,17 @@ export const accountToDisplay = createModel<RootModel>()({
       );
     },
   },
+  selectors: (slice) => ({
+    myImportedAccounts() {
+      return slice((account) => {
+        return account.accountsList.filter(
+          (item) => filterMyAccounts(item).isMyImported
+        );
+      });
+    },
+  }),
   effects: (dispatch) => ({
-    async getAllAccountsToDisplay(_?, store?) {
+    async getAllAccountsToDisplay(_: void, store) {
       dispatch.accountToDisplay.setField({ loadingAccounts: true });
 
       const [displayedKeyrings, allAlianNames] = await Promise.all([
@@ -60,9 +73,30 @@ export const accountToDisplay = createModel<RootModel>()({
           })
           .flat(1)
           .map(async (item) => {
-            let balance = await store.app.wallet.getAddressCacheBalance(
-              item?.address
-            );
+            let balance: TotalBalanceResponse | null = null;
+
+            let accountInfo = {} as {
+              hdPathBasePublicKey?: string;
+              hdPathType?: string;
+            };
+
+            await Promise.allSettled([
+              store.app.wallet.getAddressCacheBalance(item?.address),
+              store.app.wallet.requestKeyring(
+                item.type,
+                'getAccountInfo',
+                null,
+                item.address
+              ),
+            ]).then(([res1, res2]) => {
+              if (res1.status === 'fulfilled') {
+                balance = res1.value;
+              }
+              if (res2.status === 'fulfilled') {
+                accountInfo = res2.value;
+              }
+            });
+
             if (!balance) {
               balance = {
                 total_usd_value: 0,
@@ -72,6 +106,8 @@ export const accountToDisplay = createModel<RootModel>()({
             return {
               ...item,
               balance: balance?.total_usd_value || 0,
+              hdPathBasePublicKey: accountInfo?.hdPathBasePublicKey,
+              hdPathType: accountInfo?.hdPathType,
             };
           })
       );
@@ -83,14 +119,14 @@ export const accountToDisplay = createModel<RootModel>()({
       }
     },
 
-    async updateAllBalance(_?, store?) {
+    async updateAllBalance(_: void, store) {
       const queue = new PQueue({ concurrency: 10 });
       let hasError = false;
       const result = await queue.addAll(
-        (store?.accountToDisplay?.accountsList || []).map((item) => {
+        (store.accountToDisplay?.accountsList || []).map((item) => {
           return async () => {
             try {
-              const balance = await store.app.wallet.getAddressBalance(
+              const balance = await store.app.wallet.getInMemoryAddressBalance(
                 item.address
               );
               return {

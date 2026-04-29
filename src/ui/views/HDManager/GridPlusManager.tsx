@@ -7,12 +7,14 @@ import {
 } from './AdvancedSettings';
 import { HDPathType } from './HDPathTypeButton';
 import { MainContainer } from './MainContainer';
-import { ReactComponent as SettingSVG } from 'ui/assets/setting-outline.svg';
-import { ReactComponent as HardwareSVG } from 'ui/assets/import/hardware.svg';
+import { ReactComponent as RcSettingSVG } from 'ui/assets/setting-outline-cc.svg';
+import { ReactComponent as RcHardwareSVG } from 'ui/assets/import/hardware-cc.svg';
 import { useWallet } from '@/ui/utils';
 import { Account } from './AccountList';
 import { HARDWARE_KEYRING_TYPES } from '@/constant';
 import { fetchAccountsInfo, HDManagerStateContext } from './utils';
+import { useTranslation } from 'react-i18next';
+import { Modal as CustomModal } from '@/ui/component';
 
 export type InitAccounts = {
   [key in HDPathType]: Account[];
@@ -22,9 +24,12 @@ const GRIDPLUS_TYPE = HARDWARE_KEYRING_TYPES.GridPlus.type;
 
 export const GridPlusManager: React.FC = () => {
   const [loading, setLoading] = React.useState(true);
-  const { getCurrentAccounts, createTask, keyringId } = React.useContext(
-    HDManagerStateContext
-  );
+  const {
+    getCurrentAccounts,
+    createTask,
+    keyringId,
+    setSelectedAccounts,
+  } = React.useContext(HDManagerStateContext);
   const [visibleAdvanced, setVisibleAdvanced] = React.useState(false);
   const [setting, setSetting] = React.useState<SettingData>(
     DEFAULT_SETTING_DATA
@@ -45,7 +50,8 @@ export const GridPlusManager: React.FC = () => {
     if (data.type) {
       await changeHDPathTask(data.type);
     }
-    await createTask(() => getCurrentAccounts());
+    await refreshCurrentAccounts();
+    setSelectedAccounts([]);
     setSetting(data);
     setLoading(false);
   }, []);
@@ -75,6 +81,14 @@ export const GridPlusManager: React.FC = () => {
 
       detectInitialHDPathType(accounts, usedHDPathType);
     } catch (e) {
+      if (
+        e.message.match('Please forget the device and try again') ||
+        e.message.match('Device Locked')
+      ) {
+        wallet
+          .requestKeyring(GRIDPLUS_TYPE, 'forgetDevice', keyringId)
+          .then(() => window.location.reload());
+      }
       console.error(e);
     }
 
@@ -86,6 +100,10 @@ export const GridPlusManager: React.FC = () => {
       wallet.requestKeyring(GRIDPLUS_TYPE, 'setHDPathType', keyringId, type)
     );
   }, []);
+  const refreshCurrentAccounts = React.useCallback(
+    () => createTask(() => getCurrentAccounts({ resetInitialAccounts: true })),
+    []
+  );
 
   const detectInitialHDPathType = React.useCallback(
     async (accounts: InitAccounts, usedHDPathType?: HDPathType) => {
@@ -107,7 +125,7 @@ export const GridPlusManager: React.FC = () => {
       }
 
       await changeHDPathTask(initialHDPathType!);
-      await createTask(() => getCurrentAccounts());
+      await refreshCurrentAccounts();
       setSetting((prev) => ({
         ...prev,
         type: initialHDPathType,
@@ -121,20 +139,18 @@ export const GridPlusManager: React.FC = () => {
   React.useEffect(() => {
     fetchInitAccountsTask();
   }, []);
-
+  const { t } = useTranslation();
   const openSwitchHD = React.useCallback(async () => {
     Modal.error({
-      title: 'Switch to a new GridPlus device',
-      content:
-        "It's not supported to import multiple GridPlus devices If you switch to a new GridPlus device, the current device's address list will be removed before starting the import process.",
-      okText: 'Confirm',
+      title: t('page.newAddress.hd.gridplus.switch.title'),
+      content: t('page.newAddress.hd.gridplus.switch.content'),
+      okText: t('global.confirm'),
       onOk: async () => {
         const accounts = await wallet.requestKeyring(
           GRIDPLUS_TYPE,
           'getAccounts',
           keyringId
         );
-        console.log(accounts);
         await Promise.all(
           accounts.map(async (account) =>
             wallet.removeAddress(account, GRIDPLUS_TYPE, undefined, true)
@@ -147,7 +163,7 @@ export const GridPlusManager: React.FC = () => {
       centered: true,
       closable: true,
       maskClosable: true,
-      className: 'hd-manager-switch-modal',
+      className: 'hd-manager-switch-modal modal-support-darkmode',
     });
   }, []);
 
@@ -155,21 +171,25 @@ export const GridPlusManager: React.FC = () => {
     <>
       <div className="toolbar">
         <div className="toolbar-item" onClick={openSwitchHD}>
-          <HardwareSVG className="icon" />
-          <span className="title">Switch to another GridPlus</span>
+          <RcHardwareSVG className="icon text-r-neutral-title1" />
+          <span className="title">
+            {t('page.newAddress.hd.gridplus.switchToAnotherGridplus')}
+          </span>
         </div>
         <div className="toolbar-item" onClick={openAdvanced}>
-          <SettingSVG className="icon" />
-          <span className="title">Advanced Settings</span>
+          <RcSettingSVG className="icon text-r-neutral-title1" />
+          <span className="title">
+            {t('page.newAddress.hd.advancedSettings')}
+          </span>
         </div>
       </div>
 
       <MainContainer setting={setting} loading={loading} HDName={'GridPlus'} />
 
-      <Modal
+      <CustomModal
         destroyOnClose
-        className="AdvancedModal"
-        title="Custom Address HD path"
+        className="AdvancedModal modal-support-darkmode"
+        title={t('page.newAddress.hd.customAddressHdPath')}
         visible={visibleAdvanced}
         centered
         width={840}
@@ -181,7 +201,7 @@ export const GridPlusManager: React.FC = () => {
           onConfirm={onConfirmAdvanced}
           initSettingData={setting}
         />
-      </Modal>
+      </CustomModal>
     </>
   );
 };

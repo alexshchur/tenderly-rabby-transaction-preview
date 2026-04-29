@@ -10,6 +10,9 @@ import { Account } from 'background/service/preference';
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 export const noop = () => {};
 
+import { ledgerUSBVendorId } from '@ledgerhq/devices';
+import { getImKeyDevices } from './imKey';
+
 export * from './WalletContext';
 export * from './WindowContext';
 
@@ -20,17 +23,20 @@ export * from './webapi';
 export * from './time';
 
 export * from './number';
+export * from './os';
 
 const UI_TYPE = {
   Tab: 'index',
   Pop: 'popup',
   Notification: 'notification',
+  Desktop: 'desktop',
 };
 
 type UiTypeCheck = {
   isTab: boolean;
   isNotification: boolean;
   isPop: boolean;
+  isDesktop: boolean;
 };
 
 export const getUiType = (): UiTypeCheck => {
@@ -42,11 +48,20 @@ export const getUiType = (): UiTypeCheck => {
   }, {} as UiTypeCheck);
 };
 
+export function getContainerByScreen() {
+  const uiType = getUiType();
+
+  return uiType.isTab || uiType.isDesktop
+    ? (document.querySelector('.js-rabby-popup-container') as HTMLDivElement) ||
+        document.body
+    : document.body;
+}
+
 export const hex2Text = (hex: string) => {
   try {
     return hex.startsWith('0x')
       ? decodeURIComponent(
-          hex.replace(/^0x/, '').replace(/[0-9a-f]{2}/g, '%$&')
+          hex.replace(/^0x/, '').replace(/[0-9a-fA-F]{2}/g, '%$&')
         )
       : hex;
   } catch {
@@ -60,6 +75,7 @@ export const getUITypeName = (): string => {
   if (UIType.isPop) return 'popup';
   if (UIType.isNotification) return 'notification';
   if (UIType.isTab) return 'tab';
+  if (UIType.isDesktop) return 'desktop';
 
   return '';
 };
@@ -100,7 +116,7 @@ export const isMetaMaskActive = async () => {
   if (!url) return false;
 
   try {
-    const res = await window.fetch(url);
+    const res = await fetch(url);
     await res.text();
 
     return true;
@@ -124,6 +140,9 @@ export const ellipsisOverflowedText = (
   return `${cut}...`;
 };
 
+/**
+ * @description compare address is same, ignore case
+ */
 export const isSameAddress = (a: string, b: string) => {
   if (!a || !b) return false;
   return a.toLowerCase() === b.toLowerCase();
@@ -156,4 +175,16 @@ export const getAccountIcon = (account: Account) => {
 
 export const isStringOrNumber = (data) => {
   return typeof data === 'string' || typeof data === 'number';
+};
+
+export const hasConnectedLedgerDevice = async () => {
+  const devices = await navigator.hid?.getDevices();
+  return (
+    devices?.filter((device) => device.vendorId === ledgerUSBVendorId).length >
+    0
+  );
+};
+
+export const hasConnectedImKeyDevice = async () => {
+  return !!(await getImKeyDevices()).length;
 };

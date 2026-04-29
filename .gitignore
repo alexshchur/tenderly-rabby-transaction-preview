@@ -1,4 +1,6 @@
 node_modules
+.yalc
+yalc.lock
 dist
 dist-*
 .yarn
@@ -6,3 +8,14 @@ dist-*
 yarn-error
 .idea
 _raw/tenderly.json
+.claude/settings.local.json
+.claude/CLAUDE.local.md
+tmp/*.zip
+tmp/inv-batch.json
+tmp/styled-components-id-mappings.*
+
+.direnv
+flake.nix
+flake.lock
+.envrc
+src/manifest/chrome-mv3/manifest.local.json

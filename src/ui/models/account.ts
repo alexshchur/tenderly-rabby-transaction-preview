@@ -1,17 +1,28 @@
 import { Chain } from '@debank/common';
 
-import type { Account } from '@/background/service/preference';
+import type {
+  Account,
+  CurvePointCollection,
+} from '@/background/service/preference';
 import { KEYRING_CLASS } from '@/constant';
 import { createModel } from '@rematch/core';
 import { DisplayedKeryring } from 'background/service/keyring';
-import { TotalBalanceResponse } from 'background/service/openapi';
+import {
+  ApprovalStatus,
+  TotalBalanceResponse,
+} from 'background/service/openapi';
 import { RootModel } from '.';
 import { AbstractPortfolioToken } from 'ui/utils/portfolio/types';
 import { DisplayChainWithWhiteLogo, formatChainToDisplay } from '@/utils/chain';
-import { coerceFloat } from '../utils';
+import { coerceFloat, sleep } from '../utils';
 import { isTestnet as checkIsTestnet } from '@/utils/chain';
 import { requestOpenApiMultipleNets } from '../utils/openapi';
+import { AccountScene } from '@/constant/scene-account';
 
+interface TotalBalanceWithEvmUsdValue extends TotalBalanceResponse {
+  evmUsdValue?: number;
+  appChainIds?: string[];
+}
 export interface AccountState {
   currentAccount: null | Account;
   /**
@@ -21,8 +32,13 @@ export interface AccountState {
   visibleAccounts: DisplayedKeryring[];
   hiddenAccounts: Account[];
   keyrings: DisplayedKeryring[];
-  balanceMap: {
-    [address: string]: TotalBalanceResponse;
+  balanceAboutCache: {
+    totalBalance: TotalBalanceResponse | null;
+    curvePoints: CurvePointCollection;
+  };
+  balanceAboutCacheMap: {
+    balanceMap: Record<string, TotalBalanceWithEvmUsdValue>;
+    curvePointsMap: Record<string, CurvePointCollection>;
   };
   matteredChainBalances: {
     [P in Chain['serverId']]?: DisplayChainWithWhiteLogo;
@@ -42,7 +58,31 @@ export interface AccountState {
   };
 
   mnemonicAccounts: DisplayedKeryring[];
+
+  [symLoaderMatteredBalance]: Promise<MatteredChainBalancesResult> | null;
+
+  approvalStatus: Record<string, ApprovalStatus[]>;
+
+  sceneAccountMap: Partial<Record<AccountScene, Account | null>>;
 }
+
+/**
+ * filter chains with balance:
+ * 1. greater than $1 and has percentage 1%
+ * 2. or >= $1000
+ */
+export function isChainMattered(chainUsdValue: number, totalUsdValue: number) {
+  return (
+    chainUsdValue >= 1000 ||
+    (chainUsdValue > 1 && chainUsdValue / totalUsdValue > 0.01)
+  );
+}
+
+type MatteredChainBalancesResult = {
+  mainnet: TotalBalanceResponse | null;
+  testnet: TotalBalanceResponse | null;
+};
+const symLoaderMatteredBalance = Symbol('uiHelperMateeredChainBalancesPromise');
 
 export const account = createModel<RootModel>()({
   name: 'account',
@@ -53,7 +93,14 @@ export const account = createModel<RootModel>()({
     visibleAccounts: [],
     hiddenAccounts: [],
     keyrings: [],
-    balanceMap: {},
+    balanceAboutCache: {
+      totalBalance: null,
+      curvePoints: [],
+    },
+    balanceAboutCacheMap: {
+      balanceMap: {},
+      curvePointsMap: {},
+    },
     matteredChainBalances: {},
     testnetMatteredChainBalances: {},
     mnemonicAccounts: [],
@@ -67,11 +114,18 @@ export const account = createModel<RootModel>()({
       customize: [],
       blocked: [],
     },
+
+    [symLoaderMatteredBalance]: null,
+
+    approvalStatus: {},
+
+    sceneAccountMap: {},
   } as AccountState,
 
   reducers: {
+    // TODO: abstract this method and apply to all models
     setField(state, payload: Partial<typeof state>) {
-      return Object.keys(payload).reduce(
+      return Reflect.ownKeys(payload).reduce(
         (accu, key) => {
           accu[key] = payload[key];
           return accu;
@@ -146,6 +200,16 @@ export const account = createModel<RootModel>()({
     ) {
       return { ...state, currentAccount: payload.currentAccount };
     },
+
+    setApprovalStatus(state, payload: Record<string, ApprovalStatus[]>) {
+      return {
+        ...state,
+        approvalStatus: {
+          ...state.approvalStatus,
+          ...payload,
+        },
+      };
+    },
   },
 
   selectors: (slice) => {
@@ -156,6 +220,9 @@ export const account = createModel<RootModel>()({
       currentAccountAddr() {
         return slice((account) => account.currentAccount?.address);
       },
+      currentBalanceAboutMap() {
+        return slice((account) => account.balanceAboutCacheMap);
+      },
       allMatteredChainBalances() {
         return slice((account) => {
           return {
@@ -164,20 +231,70 @@ export const account = createModel<RootModel>()({
           };
         });
       },
+      isLoadingMateeredChainBalances() {
+        return slice((account) => !!account[symLoaderMatteredBalance]);
+      },
     };
   },
 
   effects: (dispatch) => ({
-    init() {
-      return this.getCurrentAccountAsync();
+    async init(_?, store?) {
+      const account: Account = await dispatch.account.getCurrentAccountAsync();
+
+      dispatch.account.onAccountChanged(account?.address);
+
+      // 初始化gift状态
+      await dispatch.gift.initGiftStateAsync();
+      await dispatch.account.getSceneAccountMap();
+
+      return account;
     },
-    async getCurrentAccountAsync(_?: any, store?) {
+    async onAccountChanged(currentAccountAddress?: string, store?) {
+      try {
+        // 避免循环引用，直接使用传入的地址
+        if (!currentAccountAddress && store) {
+          const currentAccount = await store.app.wallet.getCurrentAccount();
+          currentAccountAddress = currentAccount?.address;
+        }
+        // trigger once when account fetched;
+        await dispatch.account.getMatteredChainBalance({
+          currentAccountAddress,
+          leastLoadingTime: true,
+        });
+      } catch (error) {
+        console.debug('error on getMatteredChainBalance');
+        console.error(error);
+      }
+    },
+    async getCurrentAccountAsync(_: void, store) {
       const account: Account = await store.app.wallet.getCurrentAccount<Account>();
       if (account) {
         dispatch.account.setCurrentAccount({ currentAccount: account });
       }
 
       return account;
+    },
+
+    async getSceneAccountMap(_: void, store) {
+      const sceneAccountMap = await store.app.wallet.getPreference(
+        'sceneAccountMap'
+      );
+      if (sceneAccountMap) {
+        dispatch.account.setField({ sceneAccountMap });
+      }
+    },
+
+    async switchSceneAccount(
+      payload: { scene: AccountScene; account: Account },
+      store
+    ) {
+      await store.app.wallet.switchSceneAccount(payload);
+      dispatch.account.setField({
+        sceneAccountMap: {
+          ...store.account.sceneAccountMap,
+          [payload.scene]: payload.account,
+        },
+      });
     },
 
     async changeAccountAsync(account: Account, store) {
@@ -198,7 +315,7 @@ export const account = createModel<RootModel>()({
       dispatch.account.setTestnetCustomizeTokenList([]);
     },
 
-    async fetchCurrentAccountAliasNameAsync(_?: any, store?) {
+    async fetchCurrentAccountAliasNameAsync(_: void, store) {
       const currentAccount = store.account.currentAccount;
       if (!currentAccount?.address) return '';
 
@@ -215,7 +332,7 @@ export const account = createModel<RootModel>()({
       return alianName;
     },
 
-    async getAllClassAccountsAsync(_?, store?) {
+    async getAllClassAccountsAsync(_: void, store) {
       const keyrings = await store.app.wallet.getAllClassAccounts<
         DisplayedKeryring[]
       >();
@@ -237,14 +354,38 @@ export const account = createModel<RootModel>()({
       return hiddenAccounts;
     },
 
-    async getTypedMnemonicAccountsAsync(_?, store?) {
+    async getTypedMnemonicAccountsAsync(_: void, store) {
       const mnemonicAccounts = await store.app.wallet.getTypedAccounts(
         KEYRING_CLASS.MNEMONIC
       );
       dispatch.account.setField({ mnemonicAccounts });
     },
 
-    async addCustomizeToken(token: AbstractPortfolioToken, store?) {
+    async getPersistedBalanceAboutCacheAsync(_?: string, _store?) {
+      const store = _store!;
+      // const currentAddr = (store as any).account.currentAccount?.address;
+      // const couldNarrowCacheSize = address && currentAddr && isSameAddress(address, currentAddr) ? address : null;
+
+      const result = await store.app.wallet.getPersistedBalanceAboutCacheMap();
+
+      if (result) {
+        dispatch.account.setField({
+          balanceAboutCacheMap: result
+            ? {
+                balanceMap: result.balanceMap || {},
+                curvePointsMap: result.curvePointsMap || {},
+              }
+            : {
+                balanceMap: {},
+                curvePointsMap: {},
+              },
+        });
+      }
+
+      return result;
+    },
+
+    async addCustomizeToken(token: AbstractPortfolioToken, store) {
       await store.app.wallet.addCustomizedToken({
         address: token._tokenId,
         chain: token.chain,
@@ -268,7 +409,7 @@ export const account = createModel<RootModel>()({
       }
     },
 
-    async removeCustomizeToken(token: AbstractPortfolioToken, store?) {
+    async removeCustomizeToken(token: AbstractPortfolioToken, store) {
       await store.app.wallet.removeCustomizedToken({
         address: token._tokenId,
         chain: token.chain,
@@ -294,7 +435,7 @@ export const account = createModel<RootModel>()({
       setTokenList(tokenList.filter((item) => item.id !== token.id));
     },
 
-    async addBlockedToken(token: AbstractPortfolioToken, store?) {
+    async addBlockedToken(token: AbstractPortfolioToken, store) {
       await store.app.wallet.addBlockedToken({
         address: token._tokenId,
         chain: token.chain,
@@ -314,9 +455,11 @@ export const account = createModel<RootModel>()({
         ? store.account.testnetTokens.list
         : store.account.tokens.list;
       setTokenList(tokenList.filter((item) => item.id !== token.id));
+
+      return token;
     },
 
-    async removeBlockedToken(token: AbstractPortfolioToken, store?) {
+    async removeBlockedToken(token: AbstractPortfolioToken, store) {
       await store.app.wallet.removeBlockedToken({
         address: token._tokenId,
         chain: token.chain,
@@ -342,13 +485,15 @@ export const account = createModel<RootModel>()({
           : store.account.tokens.list;
         setTokenList([...tokenList, token]);
       }
+
+      return token;
     },
 
     async triggerFetchBalanceOnBackground(
-      options?: {
+      options: {
         forceUpdate?: boolean;
-      },
-      store?
+      } | void,
+      store
     ) {
       const currentAccount = store.account.currentAccount;
 
@@ -359,7 +504,7 @@ export const account = createModel<RootModel>()({
 
       await requestOpenApiMultipleNets<TotalBalanceResponse | null, void>(
         (ctx) => {
-          return wallet.getAddressBalance(
+          return wallet.getInMemoryAddressBalance(
             currentAccount.address,
             true /* force */,
             ctx.isTestnetTask
@@ -378,47 +523,38 @@ export const account = createModel<RootModel>()({
     },
 
     async getMatteredChainBalance(
-      options?: { isTestnet?: boolean },
-      store?
+      options: {
+        currentAccountAddress?: string;
+        leastLoadingTime?: boolean;
+      } | void,
+      store
     ): Promise<{
       matteredChainBalances: AccountState['matteredChainBalances'];
       testnetMatteredChainBalances: AccountState['testnetMatteredChainBalances'];
     }> {
       const wallet = store!.app.wallet;
-      const isShowTestnet = store.preference.isShowTestnet;
 
-      const currentAccountAddr = store.account.currentAccount?.address;
+      const { currentAccountAddress = '' } = options || {};
+      const currentAccountAddr =
+        currentAccountAddress || store.account.currentAccount?.address;
 
-      const result = await requestOpenApiMultipleNets<
-        TotalBalanceResponse | null,
-        {
-          mainnet: TotalBalanceResponse | null;
-          testnet: TotalBalanceResponse | null;
-        }
-      >(
-        (ctx) => {
-          if (!isShowTestnet && ctx.isTestnetTask) return null;
-
-          return wallet.getAddressCacheBalance(
-            currentAccountAddr,
-            ctx.isTestnetTask
-          );
-        },
-        {
-          wallet,
-          needTestnetResult: isShowTestnet,
-          processResults: ({ mainnet, testnet }) => {
-            return {
-              mainnet: mainnet,
-              testnet: testnet,
-            };
-          },
-          fallbackValues: {
-            mainnet: null,
-            testnet: null,
-          },
-        }
-      );
+      let result: MatteredChainBalancesResult = {
+        mainnet: null,
+        testnet: null,
+      };
+      try {
+        const res = await wallet.getAddressCacheBalance(currentAccountAddr);
+        result = {
+          mainnet: res,
+          testnet: null,
+        };
+      } catch (error) {
+        console.error(error);
+      } finally {
+        dispatch.account.setField({
+          [symLoaderMatteredBalance]: null,
+        });
+      }
 
       const mainnetTotalUsdValue = (result.mainnet?.chain_list || []).reduce(
         (accu, cur) => accu + coerceFloat(cur.usd_value),
@@ -427,8 +563,7 @@ export const account = createModel<RootModel>()({
       const matteredChainBalances = (result.mainnet?.chain_list || []).reduce(
         (accu, cur) => {
           const curUsdValue = coerceFloat(cur.usd_value);
-          // TODO: only leave chain with blance greater than $1 and has percentage 1%
-          if (curUsdValue > 1 && curUsdValue / mainnetTotalUsdValue > 0.01) {
+          if (isChainMattered(curUsdValue, mainnetTotalUsdValue)) {
             accu[cur.id] = formatChainToDisplay(cur);
           }
           return accu;
@@ -445,7 +580,7 @@ export const account = createModel<RootModel>()({
       ).reduce((accu, cur) => {
         const curUsdValue = coerceFloat(cur.usd_value);
 
-        if (curUsdValue > 1 && curUsdValue / testnetTotalUsdValue > 0.01) {
+        if (isChainMattered(curUsdValue, testnetTotalUsdValue)) {
           accu[cur.id] = formatChainToDisplay(cur);
         }
         return accu;

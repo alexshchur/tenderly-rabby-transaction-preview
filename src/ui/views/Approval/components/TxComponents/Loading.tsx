@@ -1,68 +1,75 @@
 import React from 'react';
 import { Skeleton } from 'antd';
-import { ActionWrapper, SignTitle } from '../Actions';
+import { ActionWrapper } from '../ActionWrapper';
+import { Card } from '../Card';
+import { Divide } from '../Divide';
 import { Col, Row, Table } from '../Actions/components/Table';
-
-const RowLoading: React.FC<{
-  itemCount?: number;
-}> = ({ itemCount = 1 }) => {
-  return (
-    <Col>
-      <Row isTitle>
-        <Skeleton.Input active className="w-[60px] h-[15px] rounded" />
-      </Row>
-      <Row className="space-y-[8px]">
-        <div className="space-x-[4px]">
-          <Skeleton.Avatar active className="w-[16px] h-[16px]" />
-          <Skeleton.Input active className="w-[113px] h-[15px] rounded" />
-        </div>
-        {Array.from({ length: itemCount }).map((_, index) => (
-          <div key={index}>
-            <Skeleton.Input active className="w-[113px] h-[15px] rounded" />
-          </div>
-        ))}
-      </Row>
-    </Col>
-  );
-};
+import { SubCol, SubRow, SubTable } from '../Actions/components/SubTable';
 
 const Loading = () => {
   return (
-    <>
-      <SignTitle>
-        <div className="left relative">
-          <Skeleton.Input active className="w-[220px] h-[22px] rounded" />
+    <ActionWrapper>
+      <Card>
+        <div className="space-x-[8px] mx-auto flex items-center justify-center py-10">
+          <Skeleton.Avatar active className="w-[24px] h-[24px]" size={24} />
+          <Skeleton.Input active className="w-[140px] h-[16px] rounded" />
         </div>
-        <div className="float-right view-raw">
-          <Skeleton.Input active className="w-[73px] h-[22px] rounded" />
-        </div>
-      </SignTitle>
-      <ActionWrapper>
-        <div className="action-header">
-          <div className="left">
-            <Skeleton.Input active className="w-[60px] h-[22px] rounded" />
-          </div>
-          <div className="right">
-            <Skeleton.Input active className="w-[70px] h-[22px] rounded" />
-          </div>
-        </div>
-        <div className="container space-y-[13px]">
-          <Table>
-            <RowLoading itemCount={1} />
-            <RowLoading itemCount={2} />
-          </Table>
 
-          <Table>
-            <Col>
+        <Divide />
+
+        <div className="px-16 pt-16">
+          <Skeleton.Input active className="w-[100px] h-[16px] rounded mb-8" />
+
+          {Array.from({ length: 2 }).map((_, index) => (
+            <div key={index} className="space-x-[8px] py-10 flex items-center">
+              <Skeleton.Avatar active className="w-[24px] h-[24px]" size={24} />
+              <Skeleton.Input active className="w-[140px] h-[16px] rounded" />
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card>
+        <div className="px-16 py-12">
+          <Skeleton.Input active className="w-[100px] h-[16px] rounded" />
+        </div>
+        <Divide />
+        <Table className="p-12">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Col key={index}>
+              <Row isTitle>
+                <Skeleton.Input active className="w-[80px] h-[16px] rounded" />
+              </Row>
               <Row>
-                <Skeleton.Input active className="w-[125px] h-[15px] rounded" />
+                <Skeleton.Input active className="w-[100px] h-[16px] rounded" />
               </Row>
             </Col>
-            <RowLoading itemCount={0} />
-          </Table>
-        </div>
-      </ActionWrapper>
-    </>
+          ))}
+          <SubTable>
+            {Array.from({ length: 2 }).map((_, index) => (
+              <SubCol key={index}>
+                <SubRow isTitle>
+                  <Skeleton.Input
+                    active
+                    className="w-[80px] h-[16px] rounded"
+                  />
+                </SubRow>
+                <SubRow>
+                  <Skeleton.Input
+                    active
+                    className="w-[80px] h-[16px] rounded"
+                  />
+                </SubRow>
+              </SubCol>
+            ))}
+          </SubTable>
+        </Table>
+      </Card>
+
+      <Card className="pt-12 pb-16 px-16">
+        <Skeleton.Input active className="w-[100px] h-[16px] rounded" />
+      </Card>
+    </ActionWrapper>
   );
 };
 

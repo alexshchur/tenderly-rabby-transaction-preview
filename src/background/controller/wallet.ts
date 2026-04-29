@@ -1,11 +1,13 @@
-import * as ethUtil from 'ethereumjs-util';
-import Wallet, { thirdparty } from 'ethereumjs-wallet';
+import {
+  stripHexPrefix,
+  isValidPrivate,
+  addHexPrefix,
+  toChecksumAddress,
+} from '@ethereumjs/util';
 import { ethErrors } from 'eth-rpc-errors';
-import * as bip39 from 'bip39';
 import { ethers, Contract } from 'ethers';
-import { groupBy, uniq } from 'lodash';
+import { groupBy, isEqual, last, pick, sortBy, truncate, uniq } from 'lodash';
 import abiCoder, { AbiCoder } from 'web3-eth-abi';
-import * as optimismContracts from '@eth-optimism/contracts';
 import {
   keyringService,
   preferenceService,
@@ -15,42 +17,63 @@ import {
   openapiService,
   pageStateCacheService,
   transactionHistoryService,
+  transactionsService,
   contactBookService,
+  currencyService,
   signTextHistoryService,
   whitelistService,
   swapService,
   RPCService,
   unTriggerTxCounter,
-  contextMenuService,
   securityEngineService,
+  transactionBroadcastWatchService,
+  RabbyPointsService,
+  HDKeyRingLastAddAddrTimeService,
+  bridgeService,
+  gasAccountService,
+  uninstalledService,
+  OfflineChainsService,
+  perpsService,
+  miscService,
+  lendingService,
+  innerDappFrameService,
 } from 'background/service';
+import type { GasAccountServiceStore } from 'background/service/gasAccount';
 import buildinProvider, {
   EthereumProvider,
 } from 'background/utils/buildinProvider';
 import { openIndexPage } from 'background/webapi/tab';
 import { CacheState } from 'background/service/pageStateCache';
-import i18n from 'background/service/i18n';
-import { KEYRING_CLASS, DisplayedKeryring } from 'background/service/keyring';
+import { DisplayedKeryring, KeyringService } from 'background/service/keyring';
 import providerController from './provider/controller';
 import BaseController from './base';
 import {
   KEYRING_WITH_INDEX,
-  CHAINS,
-  INTERNAL_REQUEST_ORIGIN,
   EVENTS,
   BRAND_ALIAN_TYPE_TEXT,
   WALLET_BRAND_CONTENT,
   CHAINS_ENUM,
   KEYRING_TYPE,
-  GNOSIS_SUPPORT_CHAINS,
+  INTERNAL_REQUEST_SESSION,
+  DARK_MODE_TYPE,
+  KEYRING_CLASS,
+  DBK_CHAIN_ID,
+  DBK_NFT_CONTRACT_ADDRESS,
+  CORE_KEYRING_TYPES,
 } from 'consts';
-import { ERC20ABI } from 'consts/abi';
-import { Account, IHighlightedAddress } from '../service/preference';
+import { ERC20ABI, ERC721ABI, SeaportABI } from 'consts/abi';
+import {
+  Account,
+  IHighlightedAddress,
+  UnlockPreferredMethod,
+} from '../service/preference';
 import { ConnectedSite } from '../service/permission';
 import {
   TokenItem,
-  TotalBalanceResponse,
   Tx,
+  TxHistoryResult,
+  NFTDetail,
+  BridgeHistory,
   testnetOpenapiService,
 } from '../service/openapi';
 import {
@@ -60,13 +83,21 @@ import {
 } from '@rabby-wallet/rabby-security-engine/dist/rules';
 import DisplayKeyring from '../service/keyring/display';
 import provider from './provider';
-import WalletConnectKeyring from '@rabby-wallet/eth-walletconnect-keyring';
+import { WalletConnectKeyring } from '@rabby-wallet/eth-walletconnect-keyring';
 import eventBus from '@/eventBus';
 import {
   setPageStateCacheWhenPopupClose,
   isSameAddress,
   setPopupIcon,
 } from 'background/utils';
+import {
+  handleGasAccountLoginSuccess as syncGasAccountLoginSuccess,
+  trackGasAccountActiveStatus as trackCurrentGasAccountActiveStatus,
+} from '../utils/gasAccountLogin';
+import {
+  discoverGasAccountRuntimeState,
+  GAS_ACCOUNT_DISCOVERY_TOP_BALANCE_ACCOUNT_LIMIT,
+} from '../utils/gasAccountDiscovery';
 import GnosisKeyring, {
   TransactionBuiltEvent,
   TransactionConfirmedEvent,
@@ -77,34 +108,150 @@ import KeystoneKeyring, {
 } from '../service/keyring/eth-keystone-keyring';
 import WatchKeyring from '@rabby-wallet/eth-watch-keyring';
 import stats from '@/stats';
-import { generateAliasName } from '@/utils/account';
-import buildUnserializedTransaction from '@/utils/optimism/buildUnserializedTransaction';
+import {
+  generateAliasName,
+  isFullVersionAccountType,
+  isSameAccount,
+} from '@/utils/account';
 import BigNumber from 'bignumber.js';
 import * as Sentry from '@sentry/browser';
-import { addHexPrefix, unpadHexString } from 'ethereumjs-util';
 import PQueue from 'p-queue';
 import { ProviderRequest } from './provider/type';
 import { QuoteResult } from '@rabby-wallet/rabby-swap/dist/quote';
+
 import transactionWatcher from '../service/transactionWatcher';
 import Safe from '@rabby-wallet/gnosis-sdk';
 import { Chain } from '@debank/common';
-import { isAddress } from 'web3-utils';
-import { findChainByEnum } from '@/utils/chain';
+import {
+  decodeFunctionResult,
+  encodeFunctionData,
+  fromHex,
+  isAddress,
+  parseAbi,
+  zeroAddress,
+} from 'viem';
+import {
+  ensureChainListValid,
+  findChain,
+  findChainByEnum,
+  findChainByID,
+  findChainByServerID,
+  getChainList,
+} from '@/utils/chain';
 import { cached } from '../utils/cache';
 import { createSafeService } from '../utils/safe';
 import { OpenApiService } from '@rabby-wallet/rabby-api';
 import { autoLockService } from '../service/autoLock';
+import { t } from 'i18next';
+import {
+  broadcastChainChanged,
+  createWeb3Provider,
+  getWeb3Provider,
+  web3AbiCoder,
+} from './utils';
+import { CoboSafeAccount } from '@/utils/cobo-agrus-sdk/cobo-agrus-sdk';
+import CoboArgusKeyring from '../service/keyring/eth-cobo-argus-keyring';
+import { GET_WALLETCONNECT_CONFIG, allChainIds } from '@/utils/walletconnect';
+import { estimateL1Fee } from '@/utils/l2';
+import HdKeyring from '@rabby-wallet/eth-hd-keyring';
+import CoinbaseKeyring from '@rabby-wallet/eth-coinbase-keyring/dist/coinbase-keyring';
+import {
+  customTestnetService,
+  fakeTestnetOpenapi,
+} from '../service/customTestnet';
+import { getKeyringBridge, hasBridge } from '../service/keyring/bridge';
+import { syncChainService } from '../service/syncChain';
+import { matomoRequestEvent } from '@/utils/matomo-request';
+import { BALANCE_LOADING_CONFS } from '@/constant/timeout';
+import { IExtractFromPromise } from '@/ui/utils/type';
+import { Wallet, thirdparty } from '@ethereumjs/wallet';
+import { BridgeRecord } from '../service/bridge';
+import { TokenSpenderPair } from '@/types/permit2';
+import {
+  summarizeRevoke,
+  ApprovalSpenderItemToBeRevoked,
+  decodePermit2GroupKey,
+} from '@/utils/approve';
+import { appIsProd, isManifestV3 } from '@/utils/env';
+import {
+  buildTempoBatchTransaction,
+  getTxMatchData,
+  shouldUseTempoBatchTransaction,
+} from '@/utils/tempo';
+import { getRecommendGas, getRecommendNonce } from './walletUtils/sign';
+import { waitSignComponentAmounted } from '@/utils/signEvent';
+import pRetry from 'p-retry';
+import Browser, { Windows } from 'webextension-polyfill';
+import { hashSafeMessage } from '@safe-global/protocol-kit';
+import { userGuideService } from '../service/userGuide';
+import { metamaskModeService } from '../service/metamaskModeService';
+import { ga4 } from '@/utils/ga4';
+import { bgRetryTxMethods } from '../utils/errorTxRetry';
+import {
+  BridgeTxHistoryItem,
+  SendNftTxHistoryItem,
+  SendTxHistoryItem,
+  SwapTxHistoryItem,
+} from '../service/transactionHistory';
+
+import { Seaport } from '@opensea/seaport-js';
+import { OrderComponents } from '@opensea/seaport-js/lib/types';
+import { CROSS_CHAIN_SEAPORT_V1_6_ADDRESS } from '@opensea/seaport-js/lib/constants';
+import { buildCreateListingTypedData } from '@/utils/nft';
+import { http } from '../utils/http';
+import { getPerpsSDK } from '@/ui/views/Perps/sdkManager';
+import { GNOSIS_SUPPORT_CHAINS } from '@rabby-wallet/gnosis-sdk/dist/api';
+import { AccountScene, SCENE_ACCOUNT_CONFIG } from '@/constant/scene-account';
+import { syncDbService } from '@/db/services/syncDbService';
+import { historyDbService } from '@/db/services/historyDbService';
+import { tokenDbService } from '@/db/services/tokenDbService';
+import { defiDbService } from '@/db/services/defiDbService';
+import { appChainDbService } from '@/db/services/appChainDbService';
+import { balanceDbService } from '@/db/services/balanceDbService';
+import { BALANCE_SYNC_SCENE, CACHE_VALID_DURATION } from '@/db/constants';
+import {
+  BalanceCacheData,
+  normalizeBalanceCacheData,
+} from '@/db/schema/balance';
 
 const stashKeyrings: Record<string | number, any> = {};
 
 const MAX_UNSIGNED_256_INT = new BigNumber(2).pow(256).minus(1).toString(10);
 
+const gnosisPQueue = new PQueue({
+  interval: 1000,
+  intervalCap: 5,
+  carryoverConcurrencyCount: false,
+  concurrency: 2,
+});
+
+type DesktopPageType = 'profile' | 'perps' | 'lending' | 'prediction';
+
+function getDesktopPageType(path: string): DesktopPageType {
+  const normalized = path.replace(/^\//, '');
+  if (normalized.startsWith('desktop/perps')) return 'perps';
+  if (normalized.startsWith('desktop/lending')) return 'lending';
+  if (normalized.startsWith('desktop/prediction')) return 'prediction';
+  return 'profile';
+}
+
 export class WalletController extends BaseController {
   openapi = openapiService;
   testnetOpenapi = testnetOpenapiService;
+  fakeTestnetOpenapi = fakeTestnetOpenapi;
 
   /* wallet */
-  boot = (password) => keyringService.boot(password);
+  boot = async (password) => {
+    await keyringService.boot(password);
+    userGuideService.destroy();
+    const hasOtherProvider = preferenceService.getHasOtherProvider();
+    const isDefaultWallet = preferenceService.getIsDefaultWallet();
+    if (!hasOtherProvider) {
+      setPopupIcon('default');
+    } else {
+      setPopupIcon(isDefaultWallet ? 'rabby' : 'metamask');
+    }
+  };
   isBooted = () => keyringService.isBooted();
   verifyPassword = (password: string) =>
     keyringService.verifyPassword(password);
@@ -119,8 +266,7 @@ export class WalletController extends BaseController {
     whitelistService.addWhitelist(address);
   };
 
-  removeWhitelist = async (password: string, address: string) => {
-    await this.verifyPassword(password);
+  removeWhitelist = async (address: string) => {
     whitelistService.removeWhitelist(address);
   };
 
@@ -141,29 +287,42 @@ export class WalletController extends BaseController {
     return whitelistService.isWhitelistEnabled();
   };
 
-  requestETHRpc = (data: { method: string; params: any }, chainId: string) => {
+  requestETHRpc = <T = any>(
+    data: { method: string; params: any },
+    chainId: string,
+    account?: Account
+  ): Promise<IExtractFromPromise<T>> => {
     return providerController.ethRpc(
       {
         data,
-        session: {
-          name: 'Rabby',
-          origin: INTERNAL_REQUEST_ORIGIN,
-          icon: './images/icon-128.png',
-        },
+        session: INTERNAL_REQUEST_SESSION,
+        account,
       },
       chainId
     );
   };
 
-  sendRequest = <T = any>(data: ProviderRequest['data']) => {
+  sendRequest = <T = any>(
+    data: ProviderRequest['data'],
+    options?: {
+      isBuild?: boolean;
+      account?: Account;
+      session?: typeof INTERNAL_REQUEST_SESSION;
+    }
+  ) => {
+    const { isBuild = false, account, session } = options || {};
+    if (isBuild) {
+      return Promise.resolve<T>(data as T);
+    }
     return provider<T>({
       data,
-      session: {
-        name: 'Rabby',
-        origin: INTERNAL_REQUEST_ORIGIN,
-        icon: './images/icon-128.png',
-      },
+      session: session || INTERNAL_REQUEST_SESSION,
+      account,
     });
+  };
+
+  resendSign = (retry?: boolean) => {
+    notificationService.callCurrentRequestDeferFn(retry);
   };
 
   getApproval = notificationService.getApproval;
@@ -183,11 +342,11 @@ export class WalletController extends BaseController {
     contractAddress: string
   ): Promise<string> => {
     const account = await preferenceService.getCurrentAccount();
-    if (!account) throw new Error('no current account');
-    const chainId = Object.values(CHAINS)
-      .find((chain) => chain.serverId === chainServerId)
-      ?.id.toString();
-    if (!chainId) throw new Error('invalid chain id');
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chainId = findChain({
+      serverId: chainServerId,
+    })?.id.toString();
+    if (!chainId) throw new Error(t('background.error.invalidChainId'));
 
     buildinProvider.currentProvider.currentAccount = account.address;
     buildinProvider.currentProvider.currentAccountType = account.type;
@@ -217,12 +376,12 @@ export class WalletController extends BaseController {
     $ctx?: any;
   }) => {
     const account = await preferenceService.getCurrentAccount();
-    if (!account) throw new Error('no current account');
-    const chain = Object.values(CHAINS).find(
-      (chain) => chain.serverId === chainServerId
-    );
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chain = findChain({
+      serverId: chainServerId,
+    });
     const chainId = chain?.id;
-    if (!chainId) throw new Error('invalid chain id');
+    if (!chainId) throw new Error(t('background.error.invalidChainId'));
     const params: Record<string, any> = {
       chainId: chain.id,
       from: account!.address,
@@ -243,7 +402,7 @@ export class WalletController extends BaseController {
             },
           ],
         },
-        [to, rawAmount]
+        [toChecksumAddress(to), rawAmount]
       ),
       isSend: true,
     };
@@ -253,11 +412,9 @@ export class WalletController extends BaseController {
       params.to = to;
       delete params.data;
       params.value = addHexPrefix(
-        unpadHexString(
-          ((abiCoder as unknown) as AbiCoder).encodeParameter(
-            'uint256',
-            rawAmount
-          )
+        ((abiCoder as unknown) as AbiCoder).encodeParameter(
+          'uint256',
+          rawAmount
         )
       );
     }
@@ -278,7 +435,7 @@ export class WalletController extends BaseController {
   }) => {
     const account = await preferenceService.getCurrentAccount();
     if (!account) {
-      throw new Error('no account');
+      throw new Error(t('background.error.noCurrentAccount'));
     }
     const currentProvider = new EthereumProvider();
     currentProvider.currentAccount = account.address;
@@ -336,7 +493,7 @@ export class WalletController extends BaseController {
     });
 
     const account = await preferenceService.getCurrentAccount();
-    if (!account) throw new Error('no current account');
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
     const txId = await this.sendToken(others);
 
     stats.report('gasTopUpTxFinished', {
@@ -404,6 +561,8 @@ export class WalletController extends BaseController {
       gasPrice,
       shouldTwoStepApprove,
       postSwapParams,
+      addHistoryData,
+      swapPreferMEVGuarded,
     }: {
       chain: CHAINS_ENUM;
       quote: QuoteResult;
@@ -413,18 +572,73 @@ export class WalletController extends BaseController {
       unlimited: boolean;
       gasPrice?: number;
       shouldTwoStepApprove: boolean;
+      swapPreferMEVGuarded: boolean;
 
       postSwapParams?: Omit<
         Parameters<OpenApiService['postSwap']>[0],
         'tx_id' | 'tx'
       >;
+      addHistoryData: Omit<SwapTxHistoryItem, 'hash'>;
     },
     $ctx?: any
   ) => {
     const account = await preferenceService.getCurrentAccount();
-    if (!account) throw new Error('no current account');
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
     const chainObj = findChainByEnum(chain);
-    if (!chainObj) throw new Error(`Can not find chain ${chain}`);
+    if (!chainObj)
+      throw new Error(t('background.error.notFindChain', { chain }));
+
+    const shouldBatchTempoSwap =
+      needApprove &&
+      shouldUseTempoBatchTransaction({
+        chainServerId: chainObj.serverId,
+        accountType: account.type,
+        txCount: 1 + Number(needApprove) + Number(shouldTwoStepApprove),
+      });
+
+    if (shouldBatchTempoSwap) {
+      const txs = await this.buildDexSwapTxs(
+        {
+          chainObj,
+          quote,
+          needApprove,
+          spender,
+          pay_token_id,
+          gasPrice,
+          shouldTwoStepApprove,
+          swapPreferMEVGuarded,
+        },
+        $ctx,
+        account
+      );
+
+      if (!txs.length) return;
+      const batchedTx = buildTempoBatchTransaction(txs as any, {
+        stripTopLevelData: false,
+      }) as Tx;
+
+      if (postSwapParams) {
+        swapService.addTx(chain, quote.tx.data, postSwapParams);
+        transactionHistoryService.addCacheHistoryData(
+          `${chain}-${getTxMatchData({ data: quote.tx.data })}`,
+          addHistoryData,
+          'swap'
+        );
+      }
+
+      await this.sendRequest({
+        $ctx: {
+          ga: {
+            ...$ctx?.ga,
+            source: 'approvalAndSwap|swap',
+          },
+        },
+        method: 'eth_sendTransaction',
+        params: [batchedTx],
+      });
+      return;
+    }
+
     try {
       if (shouldTwoStepApprove) {
         unTriggerTxCounter.increase(3);
@@ -440,7 +654,7 @@ export class WalletController extends BaseController {
             },
           },
           gasPrice,
-          { isSwap: true }
+          { isSwap: true, swapPreferMEVGuarded }
         );
         unTriggerTxCounter.decrease();
       }
@@ -453,7 +667,8 @@ export class WalletController extends BaseController {
           chainObj.serverId,
           pay_token_id,
           spender,
-          unlimited ? MAX_UNSIGNED_256_INT : quote.fromTokenAmount,
+          // unlimited ? MAX_UNSIGNED_256_INT : quote.fromTokenAmount,
+          quote.fromTokenAmount,
           {
             ga: {
               ...$ctx?.ga,
@@ -461,13 +676,18 @@ export class WalletController extends BaseController {
             },
           },
           gasPrice,
-          { isSwap: true }
+          { isSwap: true, swapPreferMEVGuarded }
         );
         unTriggerTxCounter.decrease();
       }
 
       if (postSwapParams) {
         swapService.addTx(chain, quote.tx.data, postSwapParams);
+        transactionHistoryService.addCacheHistoryData(
+          `${chain}-${getTxMatchData({ data: quote.tx.data })}`,
+          addHistoryData,
+          'swap'
+        );
       }
       await this.sendRequest({
         $ctx:
@@ -491,6 +711,7 @@ export class WalletController extends BaseController {
               ? `0x${new BigNumber(gasPrice).toString(16)}`
               : undefined,
             isSwap: true,
+            swapPreferMEVGuarded,
           },
         ],
       });
@@ -498,6 +719,569 @@ export class WalletController extends BaseController {
     } catch (e) {
       unTriggerTxCounter.reset();
     }
+  };
+
+  private buildDexSwapTxs = async (
+    {
+      chainObj,
+      quote,
+      needApprove,
+      spender,
+      pay_token_id,
+      gasPrice,
+      shouldTwoStepApprove,
+      swapPreferMEVGuarded,
+    }: {
+      chainObj: NonNullable<ReturnType<typeof findChainByEnum>>;
+      quote: QuoteResult;
+      needApprove: boolean;
+      spender: string;
+      pay_token_id: string;
+      gasPrice?: number;
+      shouldTwoStepApprove: boolean;
+      swapPreferMEVGuarded: boolean;
+    },
+    $ctx?: any,
+    account?: Account
+  ) => {
+    const txs: Tx[] = [];
+
+    try {
+      if (shouldTwoStepApprove) {
+        unTriggerTxCounter.increase(3);
+        const res = await this.approveToken(
+          chainObj.serverId,
+          pay_token_id,
+          spender,
+          0,
+          {
+            ga: {
+              ...$ctx?.ga,
+              source: 'approvalAndSwap|tokenApproval',
+            },
+          },
+          gasPrice,
+          { isSwap: true, swapPreferMEVGuarded },
+          true,
+          account
+        );
+        txs.push(res.params[0]);
+        unTriggerTxCounter.decrease();
+      }
+
+      if (needApprove) {
+        if (!shouldTwoStepApprove) {
+          unTriggerTxCounter.increase(2);
+        }
+        const res = await this.approveToken(
+          chainObj.serverId,
+          pay_token_id,
+          spender,
+          quote.fromTokenAmount,
+          {
+            ga: {
+              ...$ctx?.ga,
+              source: 'approvalAndSwap|tokenApproval',
+            },
+          },
+          gasPrice,
+          { isSwap: true, swapPreferMEVGuarded },
+          true,
+          account
+        );
+
+        txs.push(res.params[0]);
+        unTriggerTxCounter.decrease();
+      }
+
+      const res = await this.sendRequest(
+        {
+          $ctx:
+            needApprove && pay_token_id !== chainObj.nativeTokenAddress
+              ? {
+                  ga: {
+                    ...$ctx?.ga,
+                    source: 'approvalAndSwap|swap',
+                  },
+                }
+              : $ctx,
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              from: quote.tx.from,
+              to: quote.tx.to,
+              data: quote.tx.data || '0x',
+              value: `0x${new BigNumber(quote.tx.value || '0').toString(16)}`,
+              chainId: chainObj.id,
+              gasPrice: gasPrice
+                ? `0x${new BigNumber(gasPrice).toString(16)}`
+                : undefined,
+              isSwap: true,
+              swapPreferMEVGuarded,
+            },
+          ],
+        },
+        {
+          isBuild: true,
+          account,
+        }
+      );
+      txs.push(res.params[0]);
+      unTriggerTxCounter.decrease();
+    } catch (e) {
+      unTriggerTxCounter.reset();
+    }
+
+    return txs;
+  };
+
+  buildDexSwap = async (
+    {
+      chain,
+      quote,
+      needApprove,
+      spender,
+      pay_token_id,
+      unlimited,
+      gasPrice,
+      shouldTwoStepApprove,
+      postSwapParams,
+      addHistoryData,
+      swapPreferMEVGuarded,
+    }: {
+      chain: CHAINS_ENUM;
+      quote: QuoteResult;
+      needApprove: boolean;
+      spender: string;
+      pay_token_id: string;
+      unlimited: boolean;
+      gasPrice?: number;
+      shouldTwoStepApprove: boolean;
+      swapPreferMEVGuarded: boolean;
+
+      postSwapParams?: Omit<
+        Parameters<OpenApiService['postSwap']>[0],
+        'tx_id' | 'tx'
+      >;
+      addHistoryData: Omit<SwapTxHistoryItem, 'hash'>;
+    },
+    $ctx?: any
+  ) => {
+    const account = await preferenceService.getCurrentAccount();
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chainObj = findChainByEnum(chain);
+    if (!chainObj)
+      throw new Error(t('background.error.notFindChain', { chain }));
+
+    const txs = await this.buildDexSwapTxs(
+      {
+        chainObj,
+        quote,
+        needApprove,
+        spender,
+        pay_token_id,
+        gasPrice,
+        shouldTwoStepApprove,
+        swapPreferMEVGuarded,
+      },
+      $ctx,
+      account
+    );
+
+    if (postSwapParams) {
+      swapService.addTx(chain, quote.tx.data, postSwapParams);
+      transactionHistoryService.addCacheHistoryData(
+        `${chain}-${getTxMatchData({ data: quote.tx.data })}`,
+        addHistoryData,
+        'swap'
+      );
+    }
+
+    if (
+      shouldUseTempoBatchTransaction({
+        chainServerId: chainObj.serverId,
+        accountType: account.type,
+        txs,
+      })
+    ) {
+      return [
+        buildTempoBatchTransaction(txs as any, {
+          stripTopLevelData: false,
+        }) as Tx,
+      ];
+    }
+
+    return txs;
+  };
+
+  bridgeToken = async (
+    {
+      approveId,
+      to,
+      data,
+      payTokenRawAmount,
+      payTokenId,
+      payTokenChainServerId,
+      shouldApprove,
+      shouldTwoStepApprove,
+      gasPrice,
+      info,
+      value,
+      addHistoryData,
+    }: {
+      approveId?: string;
+      data: string;
+      to: string;
+      value: string;
+      chainId: number;
+      shouldApprove: boolean;
+      shouldTwoStepApprove: boolean;
+      payTokenId: string;
+      payTokenChainServerId: string;
+      payTokenRawAmount: string;
+      gasPrice?: number;
+      info: BridgeRecord;
+      addHistoryData: Omit<BridgeTxHistoryItem, 'hash'>;
+    },
+    $ctx?: any
+  ) => {
+    const account = await preferenceService.getCurrentAccount();
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chainObj = findChain({ serverId: payTokenChainServerId });
+    if (!chainObj)
+      throw new Error(
+        t('background.error.notFindChain', { payTokenChainServerId })
+      );
+
+    const shouldBatchTempoBridge =
+      shouldApprove &&
+      shouldUseTempoBatchTransaction({
+        chainServerId: chainObj.serverId,
+        accountType: account.type,
+        txCount: 1 + Number(shouldApprove) + Number(shouldTwoStepApprove),
+      });
+
+    if (shouldBatchTempoBridge) {
+      const txs = await this.buildBridgeTokenTxs(
+        {
+          approveId,
+          to,
+          data,
+          payTokenRawAmount,
+          payTokenId,
+          chainObj,
+          shouldApprove,
+          shouldTwoStepApprove,
+          gasPrice,
+          value,
+        },
+        $ctx,
+        account
+      );
+
+      if (!txs.length) return;
+      const batchedTx = buildTempoBatchTransaction(txs as any, {
+        stripTopLevelData: false,
+      }) as Tx;
+
+      if (info) {
+        bridgeService.addTx(chainObj.enum, data, info);
+        transactionHistoryService.addCacheHistoryData(
+          `${chainObj.enum}-${getTxMatchData({ data })}`,
+          addHistoryData,
+          'bridge'
+        );
+      }
+
+      await this.sendRequest({
+        $ctx: {
+          ga: {
+            ...$ctx?.ga,
+            source: 'approvalAndBridge|bridge',
+          },
+        },
+        method: 'eth_sendTransaction',
+        params: [batchedTx],
+      });
+      return;
+    }
+
+    try {
+      if (shouldTwoStepApprove) {
+        unTriggerTxCounter.increase(3);
+        await this.approveToken(
+          payTokenChainServerId,
+          payTokenId,
+          approveId || to,
+          0,
+          {
+            ga: {
+              ...$ctx?.ga,
+              source: 'approvalAndBridge|tokenApproval',
+            },
+          },
+          gasPrice,
+          { isBridge: true }
+        );
+        unTriggerTxCounter.decrease();
+      }
+
+      if (shouldApprove) {
+        if (!shouldTwoStepApprove) {
+          unTriggerTxCounter.increase(2);
+        }
+        await this.approveToken(
+          payTokenChainServerId,
+          payTokenId,
+          approveId || to,
+          payTokenRawAmount,
+          {
+            ga: {
+              ...$ctx?.ga,
+              source: 'approvalAndBridge|tokenApproval',
+            },
+          },
+          gasPrice,
+          { isBridge: true }
+        );
+        unTriggerTxCounter.decrease();
+      }
+
+      if (info) {
+        bridgeService.addTx(chainObj.enum, data, info);
+        transactionHistoryService.addCacheHistoryData(
+          `${chainObj.enum}-${getTxMatchData({ data })}`,
+          addHistoryData,
+          'bridge'
+        );
+      }
+      await this.sendRequest({
+        $ctx:
+          shouldApprove && payTokenId !== chainObj.nativeTokenAddress
+            ? {
+                ga: {
+                  ...$ctx?.ga,
+                  source: 'approvalAndBridge|bridge',
+                },
+              }
+            : $ctx,
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from: account.address,
+            to: to,
+            data: data || '0x',
+            value: `0x${new BigNumber(value || '0').toString(16)}`,
+            chainId: chainObj.id,
+            gasPrice: gasPrice
+              ? `0x${new BigNumber(gasPrice).toString(16)}`
+              : undefined,
+            isBridge: true,
+          },
+        ],
+      });
+      unTriggerTxCounter.decrease();
+    } catch (e) {
+      unTriggerTxCounter.reset();
+    }
+  };
+
+  private buildBridgeTokenTxs = async (
+    {
+      approveId,
+      to,
+      data,
+      payTokenRawAmount,
+      payTokenId,
+      chainObj,
+      shouldApprove,
+      shouldTwoStepApprove,
+      gasPrice,
+      value,
+    }: {
+      approveId?: string;
+      data: string;
+      to: string;
+      value: string;
+      shouldApprove: boolean;
+      shouldTwoStepApprove: boolean;
+      payTokenId: string;
+      chainObj: NonNullable<ReturnType<typeof findChain>>;
+      payTokenRawAmount: string;
+      gasPrice?: number;
+    },
+    $ctx?: any,
+    account?: Account
+  ) => {
+    const txs: Tx[] = [];
+    try {
+      if (shouldTwoStepApprove) {
+        unTriggerTxCounter.increase(3);
+        const res = await this.approveToken(
+          chainObj.serverId,
+          payTokenId,
+          approveId || to,
+          0,
+          {
+            ga: {
+              ...$ctx?.ga,
+              source: 'approvalAndBridge|tokenApproval',
+            },
+          },
+          gasPrice,
+          { isBridge: true },
+          true,
+          account
+        );
+        txs.push(res.params[0]);
+        unTriggerTxCounter.decrease();
+      }
+
+      if (shouldApprove) {
+        if (!shouldTwoStepApprove) {
+          unTriggerTxCounter.increase(2);
+        }
+        const res = await this.approveToken(
+          chainObj.serverId,
+          payTokenId,
+          approveId || to,
+          payTokenRawAmount,
+          {
+            ga: {
+              ...$ctx?.ga,
+              source: 'approvalAndBridge|tokenApproval',
+            },
+          },
+          gasPrice,
+          { isBridge: true },
+          true,
+          account
+        );
+        txs.push(res.params[0]);
+        unTriggerTxCounter.decrease();
+      }
+
+      const res = await this.sendRequest(
+        {
+          $ctx:
+            shouldApprove && payTokenId !== chainObj.nativeTokenAddress
+              ? {
+                  ga: {
+                    ...$ctx?.ga,
+                    source: 'approvalAndBridge|bridge',
+                  },
+                }
+              : $ctx,
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              from: account?.address,
+              to: to,
+              data: data || '0x',
+              value: `0x${new BigNumber(value || '0').toString(16)}`,
+              chainId: chainObj.id,
+              gasPrice: gasPrice
+                ? `0x${new BigNumber(gasPrice).toString(16)}`
+                : undefined,
+              isBridge: true,
+            },
+          ],
+        },
+        {
+          isBuild: true,
+          account,
+        }
+      );
+      txs.push(res.params[0]);
+      unTriggerTxCounter.decrease();
+    } catch (e) {
+      unTriggerTxCounter.reset();
+    }
+
+    return txs;
+  };
+
+  buildBridgeToken = async (
+    {
+      approveId,
+      to,
+      data,
+      payTokenRawAmount,
+      payTokenId,
+      payTokenChainServerId,
+      shouldApprove,
+      shouldTwoStepApprove,
+      gasPrice,
+      info,
+      value,
+      addHistoryData,
+    }: {
+      approveId?: string;
+      data: string;
+      to: string;
+      value: string;
+      chainId: number;
+      shouldApprove: boolean;
+      shouldTwoStepApprove: boolean;
+      payTokenId: string;
+      payTokenChainServerId: string;
+      payTokenRawAmount: string;
+      gasPrice?: number;
+      info: BridgeRecord;
+      addHistoryData: Omit<BridgeTxHistoryItem, 'hash'>;
+    },
+    $ctx?: any
+  ) => {
+    const account = await preferenceService.getCurrentAccount();
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chainObj = findChain({ serverId: payTokenChainServerId });
+    if (!chainObj)
+      throw new Error(
+        t('background.error.notFindChain', { payTokenChainServerId })
+      );
+
+    const txs = await this.buildBridgeTokenTxs(
+      {
+        approveId,
+        to,
+        data,
+        payTokenRawAmount,
+        payTokenId,
+        chainObj,
+        shouldApprove,
+        shouldTwoStepApprove,
+        gasPrice,
+        value,
+      },
+      $ctx,
+      account
+    );
+
+    if (info) {
+      bridgeService.addTx(chainObj.enum, data, info);
+      transactionHistoryService.addCacheHistoryData(
+        `${chainObj.enum}-${getTxMatchData({ data })}`,
+        addHistoryData,
+        'bridge'
+      );
+    }
+
+    if (
+      shouldApprove &&
+      shouldUseTempoBatchTransaction({
+        chainServerId: chainObj.serverId,
+        accountType: account.type,
+        txs,
+      })
+    ) {
+      return [
+        buildTempoBatchTransaction(txs as any, {
+          stripTopLevelData: false,
+        }) as Tx,
+      ];
+    }
+
+    return txs;
   };
 
   getUnTriggerTxCount = () => {
@@ -546,7 +1330,7 @@ export class WalletController extends BaseController {
           stateMutability: 'nonpayable',
           type: 'function',
         },
-        [spender, amount] as any
+        [toChecksumAddress(spender), amount] as any
       ),
     };
   };
@@ -558,14 +1342,21 @@ export class WalletController extends BaseController {
     amount: number | string,
     $ctx?: any,
     gasPrice?: number,
-    extra?: { isSwap: boolean }
+    extra?: {
+      isSwap?: boolean;
+      swapPreferMEVGuarded?: boolean;
+      isBridge?: boolean;
+    },
+    isBuild = false,
+    currentAccount?: Account
   ) => {
-    const account = await preferenceService.getCurrentAccount();
-    if (!account) throw new Error('no current account');
-    const chainId = Object.values(CHAINS).find(
-      (chain) => chain.serverId === chainServerId
-    )?.id;
-    if (!chainId) throw new Error('invalid chain id');
+    const account =
+      currentAccount || (await preferenceService.getCurrentAccount());
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chainId = findChain({
+      serverId: chainServerId,
+    })?.id;
+    if (!chainId) throw new Error(t('background.error.invalidChainId'));
     let tx: any = {
       from: account.address,
       to: id,
@@ -594,7 +1385,7 @@ export class WalletController extends BaseController {
           stateMutability: 'nonpayable',
           type: 'function',
         },
-        [spender, amount] as any
+        [toChecksumAddress(spender), amount] as any
       ),
     };
     if (gasPrice) {
@@ -606,46 +1397,148 @@ export class WalletController extends BaseController {
         ...extra,
       };
     }
-    await this.sendRequest({
+    return await this.sendRequest(
+      {
+        $ctx,
+        method: 'eth_sendTransaction',
+        params: [tx],
+      },
+      {
+        isBuild,
+      }
+    );
+  };
+
+  lockdownPermit2 = async (
+    input: {
+      id: string;
+      chainServerId: string;
+      tokenSpenders: TokenSpenderPair[];
+      $ctx?: any;
+      gasPrice?: number;
+    },
+    isBuild = false
+  ) => {
+    const {
+      chainServerId,
+      id,
+      tokenSpenders: _tokenSpenders,
       $ctx,
-      method: 'eth_sendTransaction',
-      params: [tx],
+      gasPrice,
+    } = input;
+
+    const tokenSpenders = JSON.parse(JSON.stringify(_tokenSpenders));
+    tokenSpenders.forEach((item: TokenSpenderPair) => {
+      item.token = toChecksumAddress(item.token);
+      item.spender = toChecksumAddress(item.spender);
     });
+
+    const account = await preferenceService.getCurrentAccount();
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chainId = findChain({
+      serverId: chainServerId,
+    })?.id;
+    if (!chainId) throw new Error(t('background.error.invalidChainId'));
+    const tx: any = {
+      from: account.address,
+      to: id,
+      chainId: chainId,
+      data: web3AbiCoder.encodeFunctionCall(
+        {
+          constant: false,
+          inputs: [
+            {
+              name: 'approvals',
+              type: 'tuple[]',
+              internalType: 'tuple[]',
+              components: [
+                { type: 'address', name: 'token' },
+                { type: 'address', name: 'spender' },
+              ],
+            },
+          ],
+          name: 'lockdown',
+          outputs: [
+            {
+              name: '',
+              type: 'bool',
+            },
+          ],
+          payable: false,
+          stateMutability: 'nonpayable',
+          type: 'function',
+        },
+        [tokenSpenders] as any
+      ),
+    };
+    if (gasPrice) {
+      tx.gasPrice = gasPrice;
+    }
+
+    return await this.sendRequest(
+      {
+        $ctx,
+        method: 'eth_sendTransaction',
+        params: [tx],
+      },
+      {
+        isBuild,
+      }
+    );
   };
 
   fetchEstimatedL1Fee = async (
     txMeta: Record<string, any> & {
       txParams: any;
-    }
+    },
+    chain = CHAINS_ENUM.OP,
+    _account?: Account
   ) => {
-    const account = await preferenceService.getCurrentAccount();
-    if (!account) throw new Error('no current account');
+    const account = _account || (await preferenceService.getCurrentAccount());
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
     buildinProvider.currentProvider.currentAccount = account.address;
     buildinProvider.currentProvider.currentAccountType = account.type;
     buildinProvider.currentProvider.currentAccountBrand = account.brandName;
-    buildinProvider.currentProvider.chainId = CHAINS['OP'].network;
+    buildinProvider.currentProvider.chainId = findChain({
+      enum: chain,
+    })!.network;
 
     const provider = new ethers.providers.Web3Provider(
       buildinProvider.currentProvider
     );
 
-    const signer = provider.getSigner();
-    const OVMGasPriceOracle = optimismContracts
-      .getContractFactory('OVM_GasPriceOracle')
-      .attach(optimismContracts.predeploys.OVM_GasPriceOracle);
-    const abi = JSON.parse(
-      OVMGasPriceOracle.interface.format(
-        ethers.utils.FormatTypes.json
-      ) as string
-    );
+    const res = await estimateL1Fee({
+      txParams: txMeta.txParams,
+      chain,
+      provider,
+    });
 
-    const contract = new Contract(OVMGasPriceOracle.address, abi, signer);
-    const serializedTransaction = buildUnserializedTransaction(
-      txMeta
-    ).serialize();
+    return res;
+  };
 
-    const res = await contract.getL1Fee(serializedTransaction);
-    return res.toHexString();
+  mintDBKChainNFT = async () => {
+    const account = await preferenceService.getCurrentAccount();
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    await this.sendRequest({
+      method: 'eth_sendTransaction',
+      params: [
+        {
+          from: account.address,
+          to: DBK_NFT_CONTRACT_ADDRESS,
+          chainId: DBK_CHAIN_ID,
+          data: ((abiCoder as unknown) as AbiCoder).encodeFunctionCall(
+            {
+              name: 'mint',
+              inputs: [],
+              outputs: [],
+              stateMutability: 'nonpayable',
+              type: 'function',
+            },
+            []
+          ),
+        },
+      ],
+    });
   };
 
   transferNFT = async (
@@ -667,11 +1560,11 @@ export class WalletController extends BaseController {
     $ctx?: any
   ) => {
     const account = await preferenceService.getCurrentAccount();
-    if (!account) throw new Error('no current account');
-    const chainId = Object.values(CHAINS).find(
-      (chain) => chain.serverId === chainServerId
-    )?.id;
-    if (!chainId) throw new Error('invalid chain id');
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chainId = findChain({
+      serverId: chainServerId,
+    })?.id;
+    if (!chainId) throw new Error(t('background.error.invalidChainId'));
     if (abi === 'ERC721') {
       await this.sendRequest({
         $ctx,
@@ -699,7 +1592,11 @@ export class WalletController extends BaseController {
                 stateMutability: 'nonpayable',
                 type: 'function',
               },
-              [account.address, to, tokenId] as any
+              [
+                toChecksumAddress(account.address),
+                toChecksumAddress(to),
+                tokenId,
+              ]
             ),
           },
         ],
@@ -747,13 +1644,19 @@ export class WalletController extends BaseController {
                 stateMutability: 'nonpayable',
                 type: 'function',
               },
-              [account.address, to, tokenId, amount, []] as any
+              [
+                toChecksumAddress(account.address),
+                toChecksumAddress(to),
+                tokenId,
+                amount,
+                [],
+              ] as any
             ),
           },
         ],
       });
     } else {
-      throw new Error('unknown contract abi');
+      throw new Error(t('background.error.unknownAbi'));
     }
   };
 
@@ -763,7 +1666,7 @@ export class WalletController extends BaseController {
       contractId,
       spender,
       abi,
-      tokenId,
+      nftTokenId,
       isApprovedForAll,
     }: {
       chainServerId: string;
@@ -771,111 +1674,130 @@ export class WalletController extends BaseController {
       spender: string;
       abi: 'ERC721' | 'ERC1155' | '';
       isApprovedForAll: boolean;
-      tokenId: string | null | undefined;
+      nftTokenId?: string | null | undefined;
     },
-    $ctx?: any
+    $ctx?: any,
+    isBuild = false
   ) => {
     const account = await preferenceService.getCurrentAccount();
-    if (!account) throw new Error('no current account');
-    const chainId = Object.values(CHAINS).find(
-      (chain) => chain.serverId === chainServerId
-    )?.id;
-    if (!chainId) throw new Error('invalid chain id');
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    const chainId = findChain({
+      serverId: chainServerId,
+    })?.id;
+    if (!chainId) throw new Error(t('background.error.invalidChainId'));
     if (abi === 'ERC721') {
       if (isApprovedForAll) {
-        await this.sendRequest({
-          $ctx,
-          method: 'eth_sendTransaction',
-          params: [
-            {
-              from: account.address,
-              to: contractId,
-              chainId: chainId,
-              data: ((abiCoder as unknown) as AbiCoder).encodeFunctionCall(
-                {
-                  inputs: [
-                    {
-                      internalType: 'address',
-                      name: 'operator',
-                      type: 'address',
-                    },
-                    {
-                      internalType: 'bool',
-                      name: 'approved',
-                      type: 'bool',
-                    },
-                  ],
-                  name: 'setApprovalForAll',
-                  outputs: [],
-                  stateMutability: 'nonpayable',
-                  type: 'function',
-                },
-                [spender, false] as any
-              ),
-            },
-          ],
-        });
+        return await this.sendRequest(
+          {
+            $ctx,
+            method: 'eth_sendTransaction',
+            params: [
+              {
+                from: account.address,
+                to: contractId,
+                chainId: chainId,
+                data: ((abiCoder as unknown) as AbiCoder).encodeFunctionCall(
+                  {
+                    inputs: [
+                      {
+                        internalType: 'address',
+                        name: 'operator',
+                        type: 'address',
+                      },
+                      {
+                        internalType: 'bool',
+                        name: 'approved',
+                        type: 'bool',
+                      },
+                    ],
+                    name: 'setApprovalForAll',
+                    outputs: [],
+                    stateMutability: 'nonpayable',
+                    type: 'function',
+                  },
+                  [toChecksumAddress(spender), false] as any
+                ),
+              },
+            ],
+          },
+          {
+            isBuild,
+          }
+        );
       } else {
-        await this.sendRequest({
+        return await this.sendRequest(
+          {
+            $ctx,
+            method: 'eth_sendTransaction',
+            params: [
+              {
+                from: account.address,
+                to: contractId,
+                chainId: chainId,
+                data: ((abiCoder as unknown) as AbiCoder).encodeFunctionCall(
+                  {
+                    constant: false,
+                    inputs: [
+                      { internalType: 'address', name: 'to', type: 'address' },
+                      {
+                        internalType: 'uint256',
+                        name: 'tokenId',
+                        type: 'uint256',
+                      },
+                    ],
+                    name: 'approve',
+                    outputs: [],
+                    payable: false,
+                    stateMutability: 'nonpayable',
+                    type: 'function',
+                  },
+                  [
+                    '0x0000000000000000000000000000000000000000',
+                    nftTokenId,
+                  ] as any
+                ),
+              },
+            ],
+          },
+          {
+            isBuild,
+          }
+        );
+      }
+    } else if (abi === 'ERC1155') {
+      return await this.sendRequest(
+        {
           $ctx,
           method: 'eth_sendTransaction',
           params: [
             {
               from: account.address,
               to: contractId,
-              chainId: chainId,
               data: ((abiCoder as unknown) as AbiCoder).encodeFunctionCall(
                 {
                   constant: false,
                   inputs: [
                     { internalType: 'address', name: 'to', type: 'address' },
-                    {
-                      internalType: 'uint256',
-                      name: 'tokenId',
-                      type: 'uint256',
-                    },
+                    { internalType: 'bool', name: 'approved', type: 'bool' },
                   ],
-                  name: 'approve',
+                  name: 'setApprovalForAll',
                   outputs: [],
                   payable: false,
                   stateMutability: 'nonpayable',
                   type: 'function',
                 },
-                ['0x0000000000000000000000000000000000000000', tokenId] as any
+                [toChecksumAddress(spender), false] as any
               ),
+              chainId,
             },
           ],
-        });
-      }
-    } else if (abi === 'ERC1155') {
-      await this.sendRequest({
-        $ctx,
-        method: 'eth_sendTransaction',
-        params: [
-          {
-            from: account.address,
-            to: contractId,
-            data: ((abiCoder as unknown) as AbiCoder).encodeFunctionCall(
-              {
-                constant: false,
-                inputs: [
-                  { internalType: 'address', name: 'to', type: 'address' },
-                  { internalType: 'bool', name: 'approved', type: 'bool' },
-                ],
-                name: 'setApprovalForAll',
-                outputs: [],
-                payable: false,
-                stateMutability: 'nonpayable',
-                type: 'function',
-              },
-              [spender, false] as any
-            ),
-            chainId,
-          },
-        ],
-      });
+        },
+        {
+          isBuild,
+        }
+      );
     } else {
-      throw new Error('unknown contract abi');
+      throw new Error(t('background.error.unknownAbi'));
     }
   };
 
@@ -966,13 +1888,35 @@ export class WalletController extends BaseController {
     if (!alianNameInited && alianNames.length === 0) {
       this.initAlianNames();
     }
+    const hasOtherProvider = preferenceService.getHasOtherProvider();
+    const isDefaultWallet = preferenceService.getIsDefaultWallet();
+    if (!hasOtherProvider) {
+      setPopupIcon('default');
+    } else {
+      setPopupIcon(isDefaultWallet ? 'rabby' : 'metamask');
+    }
+
+    uninstalledService.syncStatus();
+
+    setTimeout(() => {
+      eventBus.emit(EVENTS.broadcastToUI, {
+        method: EVENTS.UNLOCK_WALLET,
+      });
+    });
   };
-  isUnlocked = () => keyringService.memStore.getState().isUnlocked;
+  isUnlocked = () => keyringService.isUnlocked();
 
   lockWallet = async () => {
     await keyringService.setLocked();
+    if (isManifestV3) {
+      await Browser.storage.session.clear();
+    }
     sessionService.broadcastEvent('accountsChanged', []);
     sessionService.broadcastEvent('lock');
+    setPopupIcon('locked');
+    eventBus.emit(EVENTS.broadcastToUI, {
+      method: EVENTS.LOCK_WALLET,
+    });
   };
 
   setAutoLockTime = (time: number) => {
@@ -995,10 +1939,165 @@ export class WalletController extends BaseController {
     return preferenceService.setIsShowTestnet(value);
   };
 
+  setDesktopTokensAllMode = (value: boolean) => {
+    return preferenceService.setDesktopTokensAllMode(value);
+  };
+
   setPopupOpen = (isOpen) => {
     preferenceService.setPopupOpen(isOpen);
   };
   openIndexPage = openIndexPage;
+
+  openGasAccountPopup = async (options?: { clearApprovals?: boolean }) => {
+    const { clearApprovals = true } = options || {};
+    if (clearApprovals) {
+      this.rejectAllApprovals();
+    }
+
+    await this.setPageStateCache({
+      path: '/gas-account',
+      params: {},
+      states: {},
+    });
+
+    if (
+      isManifestV3 &&
+      Browser?.action?.openPopup &&
+      typeof Browser?.action?.openPopup === 'function'
+    ) {
+      try {
+        await Browser?.action?.openPopup();
+        return true;
+      } catch (error) {
+        console.error('[openGasAccountPopup] openPopup failed', error);
+      }
+    }
+
+    await openIndexPage('/gas-account');
+    return false;
+  };
+
+  openInDesktop = async (
+    _url: string,
+    options?: {
+      triggerFocusEventOnDesktop?: boolean;
+    }
+  ) => {
+    const { triggerFocusEventOnDesktop = true } = options || {};
+
+    const path = _url.replace(/^\//, '');
+    const pageType = getDesktopPageType(path);
+    const desktopTabIds =
+      preferenceService.getPreference('desktopTabIds') || {};
+    const storedTabId = desktopTabIds[pageType];
+
+    const currentDesktopTab = storedTabId
+      ? await Browser.tabs.get(storedTabId).catch(() => null)
+      : null;
+
+    const url = `desktop.html#/${path}`;
+    if (currentDesktopTab) {
+      const tab = await Browser.tabs.update(currentDesktopTab.id, {
+        active: true,
+        url: url,
+      });
+      triggerFocusEventOnDesktop &&
+        eventBus.emit(EVENTS.broadcastToUI, {
+          method: EVENTS.DESKTOP.FOCUSED,
+        });
+      const currentWindow = await Browser.windows.getLastFocused();
+      if (tab.windowId && tab.windowId !== currentWindow.id) {
+        Browser.windows.update(tab.windowId, {
+          focused: true,
+        });
+      }
+      return tab;
+    }
+    const tab = await Browser.tabs.create({
+      active: true,
+      url: url,
+    });
+    const latestIds = preferenceService.getPreference('desktopTabIds') || {};
+    preferenceService.setPreferencePartials({
+      desktopTabIds: { ...latestIds, [pageType]: tab.id },
+    });
+    return tab;
+  };
+
+  openBiometricUnlockSetupWindow = async (params?: { from?: string }) => {
+    if (params?.from !== 'settings') {
+      await this.clearPageStateCache();
+    }
+    const {
+      top: cTop,
+      left: cLeft,
+      width,
+    } = await Browser.windows.getLastFocused({
+      windowTypes: ['normal'],
+    } as Windows.GetInfo);
+    const from = params?.from ? `?from=${encodeURIComponent(params.from)}` : '';
+    const url = `index.html#/biometric-unlock-setup${from}`;
+    const top = cTop;
+    const left = cLeft! + width! - 500;
+    return Browser.windows.create({
+      focused: true,
+      url,
+      type: 'popup',
+      width: 400,
+      height: 460,
+      left,
+      top,
+    });
+  };
+
+  openActionPopup = async () => {
+    if (
+      isManifestV3 &&
+      Browser?.action?.openPopup &&
+      typeof Browser?.action?.openPopup === 'function'
+    ) {
+      try {
+        await Browser?.action?.openPopup();
+        return true;
+      } catch (error) {
+        console.error('[openActionPopup] openPopup failed', error);
+      }
+    }
+    return false;
+  };
+
+  finishBiometricUnlockSetup = async (
+    setupWindowId?: number,
+    options?: { openSettings?: boolean }
+  ) => {
+    const shouldOpenSettings = options?.openSettings ?? true;
+    if (shouldOpenSettings) {
+      await this.setPageStateCache({
+        path: '/dashboard',
+        params: {},
+        states: {
+          action: 'open-settings',
+        },
+      });
+    } else {
+      await this.clearPageStateCache();
+    }
+
+    if (typeof setupWindowId === 'number') {
+      try {
+        await Browser.windows.remove(setupWindowId);
+      } catch (error) {
+        console.error(
+          '[finishBiometricUnlockSetup] close setup window failed',
+          error
+        );
+      }
+    }
+
+    setTimeout(() => {
+      this.openActionPopup();
+    }, 300);
+  };
 
   hasPageStateCache = () => pageStateCacheService.has();
   getPageStateCache = () => {
@@ -1007,9 +2106,13 @@ export class WalletController extends BaseController {
   };
   clearPageStateCache = () => pageStateCacheService.clear();
   setPageStateCache = (cache: CacheState) => pageStateCacheService.set(cache);
+  getTransactionsCache = (address: string) =>
+    transactionsService.getTransactions(address);
+  updateTransactionsCache = (address: string, data: TxHistoryResult) =>
+    transactionsService.updateTransactions(address, data);
 
   getIndexByAddress = (address: string, type: string) => {
-    const hasIndex = KEYRING_WITH_INDEX.includes(type);
+    const hasIndex = KEYRING_WITH_INDEX.includes(type as any);
     if (!hasIndex) return null;
     const keyring = keyringService.getKeyringByType(type);
     if (!keyring) return null;
@@ -1032,44 +2135,208 @@ export class WalletController extends BaseController {
     }
   };
 
-  private getTotalBalanceCached = cached(async (address) => {
-    const data = await openapiService.getTotalBalance(address);
-    preferenceService.updateAddressBalance(address, data);
-    return data;
-    // 3 mins
-  });
+  private getTotalBalanceCached = cached(
+    'getTotalBalanceCached',
+    async (address: string) => {
+      const addresses = await keyringService.getAllAdresses();
+      const filtered = addresses.filter((item) =>
+        isSameAddress(item.address, address)
+      );
+      let core = false;
+      if (
+        filtered.some((item) => CORE_KEYRING_TYPES.includes(item.type as any))
+      ) {
+        core = true;
+      }
+      const data = await openapiService.getTotalBalance(address, core);
+      let appChainTotalNetWorth = 0;
+      const appChainIds: string[] = [];
+      try {
+        const { apps } = await openapiService.getAppChainList(address);
+        apps?.forEach((app) => {
+          app?.portfolio_item_list?.forEach((item) => {
+            appChainTotalNetWorth += item.stats.net_usd_value;
+          });
+          appChainIds.push(app.id);
+        });
+      } catch (error) {
+        // just ignore appChain data
+      }
+      const formatData: BalanceCacheData = normalizeBalanceCacheData({
+        ...data,
+        evmUsdValue: data.total_usd_value,
+        total_usd_value: data.total_usd_value + appChainTotalNetWorth,
+        appChainIds,
+        appChainUsdValue: appChainTotalNetWorth,
+      });
+      preferenceService.updateBalanceAboutCache(address, {
+        totalBalance: formatData,
+      });
 
-  private getTestnetTotalBalanceCached = cached(async (address) => {
-    const testnetData = await testnetOpenapiService.getTotalBalance(address);
-    preferenceService.updateTestnetAddressBalance(address, testnetData);
-    return testnetData;
-  });
+      try {
+        await Promise.all([
+          balanceDbService.putBalance(address, formatData),
+          syncDbService.setUpdatedAt({
+            address,
+            scene: BALANCE_SYNC_SCENE,
+            updatedAt: Date.now(),
+          }),
+        ]);
+      } catch (error) {
+        // keep balance response available even if Dexie persistence fails
+      }
 
-  getAddressBalance = async (
+      return formatData;
+    },
+    {
+      timeout: BALANCE_LOADING_CONFS.TIMEOUT,
+      maxSize: BALANCE_LOADING_CONFS.CACHE_LIMIT,
+    }
+  );
+
+  private getTestnetTotalBalanceCached = cached(
+    'getTestnetTotalBalanceCached',
+    async (address: string) => {
+      const testnetData = await testnetOpenapiService.getTotalBalance(address);
+      preferenceService.updateTestnetAddressBalance(address, testnetData);
+      return testnetData;
+    },
+    {
+      timeout: BALANCE_LOADING_CONFS.TIMEOUT,
+      maxSize: BALANCE_LOADING_CONFS.CACHE_LIMIT,
+    }
+  );
+
+  /**
+   * @description get balance about info by address,
+   * it will use cache in memory, or re-fetch, update-cache
+   * AND **persist the cache to preference store** if expired
+   */
+  getInMemoryAddressBalance = async (
     address: string,
     force = false,
     isTestnet = false
   ) => {
+    const addr = address?.toLowerCase() || '';
+
     if (isTestnet) {
-      return this.getTestnetTotalBalanceCached([address], address, force);
+      return this.getTestnetTotalBalanceCached.fn([addr], addr, force);
     }
-    return this.getTotalBalanceCached([address], address, force);
+    return this.getTotalBalanceCached.fn([addr], addr, force);
   };
 
-  getAddressCacheBalance = (address: string | undefined, isTestnet = false) => {
+  forceExpireInMemoryAddressBalance = (address: string, isTestnet = false) => {
+    if (isTestnet) {
+      // preferenceService.removeTestnetAddressBalance(address);
+      return this.getTestnetTotalBalanceCached.forceExpire(address);
+    }
+
+    // preferenceService.removeAddressBalance(address);
+    return this.getTotalBalanceCached.forceExpire(address);
+  };
+
+  isInMemoryAddressBalanceExpired = (address: string, isTestnet = false) => {
+    if (isTestnet) {
+      return this.getTestnetTotalBalanceCached.isExpired(address);
+    }
+
+    return this.getTotalBalanceCached.isExpired(address);
+  };
+
+  /**
+   * @deprecatedgetPersistedBalanceAboutCacheMap
+   */
+  getAddressCacheBalance = async (
+    address: string | undefined,
+    isTestnet = false
+  ) => {
     if (!address) return null;
     if (isTestnet) {
-      return preferenceService.getTestnetAddressBalance(address);
+      return null;
     }
-    return preferenceService.getAddressBalance(address);
+
+    try {
+      const balance = await balanceDbService.queryBalance(address);
+
+      if (balance) {
+        return balance;
+      }
+    } catch (error) {
+      // fallback to legacy preference cache below
+    }
+
+    const legacyBalance = preferenceService.getBalanceAboutCacheByAddress(
+      address
+    )?.totalBalance;
+
+    return legacyBalance ? normalizeBalanceCacheData(legacyBalance) : null;
   };
 
-  private getNetCurveCached = cached(async (address) => {
-    return openapiService.getNetCurve(address);
-  });
+  getPersistedBalanceAboutCacheMap = async () => {
+    const legacyCacheMap = preferenceService.getBalanceAboutCacheMap();
+    let dexieBalanceMap = {} as Record<string, BalanceCacheData>;
 
-  getNetCurve = (address, force = false) => {
-    return this.getNetCurveCached([address], address, force);
+    try {
+      dexieBalanceMap = await balanceDbService.queryBalanceMap();
+    } catch (error) {
+      // fallback to legacy preference cache below
+    }
+
+    return {
+      balanceMap: {
+        ...Object.entries(legacyCacheMap.balanceMap || {}).reduce(
+          (map, [address, balance]) => {
+            map[address] = normalizeBalanceCacheData(balance);
+            return map;
+          },
+          {} as Record<string, BalanceCacheData>
+        ),
+        ...dexieBalanceMap,
+      },
+      curvePointsMap: legacyCacheMap.curvePointsMap || {},
+    };
+  };
+
+  isBalanceDbCacheExpired = async (address: string) => {
+    let updatedAt = 0;
+
+    try {
+      updatedAt =
+        (await syncDbService.getUpdatedAt({
+          address,
+          scene: BALANCE_SYNC_SCENE,
+        })) || 0;
+    } catch (error) {
+      return true;
+    }
+
+    return updatedAt < Date.now() - CACHE_VALID_DURATION;
+  };
+
+  private getNetCurveCached = cached(
+    'getNetCurveCached',
+    async (address) => {
+      const data = await openapiService.getNetCurve(address);
+      preferenceService.updateBalanceAboutCache(address, { curvePoints: data });
+      return data;
+    },
+    {
+      timeout: BALANCE_LOADING_CONFS.TIMEOUT,
+      maxSize: BALANCE_LOADING_CONFS.CACHE_LIMIT,
+    }
+  );
+
+  getInMemoryNetCurve = (address: string, force = false) => {
+    return this.getNetCurveCached.fn([address], address, force);
+  };
+
+  forceExpireInMemoryNetCurve = (address: string) => {
+    // preferenceService.removeCurvePoints(address);
+    return this.getNetCurveCached.forceExpire(address);
+  };
+
+  isInMemoryNetCurveExpired = (address: string) => {
+    return this.getNetCurveCached.isExpired(address);
   };
 
   setHasOtherProvider = (val: boolean) =>
@@ -1083,10 +2350,113 @@ export class WalletController extends BaseController {
   getLocale = () => preferenceService.getLocale();
   setLocale = (locale: string) => preferenceService.setLocale(locale);
 
-  getLastTimeSendToken = (address: string) =>
-    preferenceService.getLastTimeSendToken(address);
-  setLastTimeSendToken = (address: string, token: TokenItem) =>
-    preferenceService.setLastTimeSendToken(address, token);
+  getCurrencyStore = () => currencyService.getStore();
+  syncCurrencyList = (force = false) => currencyService.syncCurrencyList(force);
+  getCurrency = () => currencyService.getCurrency();
+  setCurrency = (currency: string) => currencyService.setCurrency(currency);
+
+  getThemeMode = () => preferenceService.getThemeMode();
+  setThemeMode = (themeMode: DARK_MODE_TYPE) =>
+    preferenceService.setThemeMode(themeMode);
+
+  isReserveGasOnSendToken = () => preferenceService.isReserveGasOnSendToken();
+  setReserveGasOnSendToken = (val: boolean) =>
+    preferenceService.setPreferencePartials({ reserveGasOnSendToken: val });
+
+  enablePwdForNonWhitelistedTx = (enabled: boolean) => {
+    preferenceService.setPreferencePartials({
+      isEnabledPwdForNonWhitelistedTx: enabled,
+    });
+  };
+
+  enableDappAccount = (enabled: boolean) => {
+    preferenceService.setPreferencePartials({ isEnabledDappAccount: enabled });
+    const currentAccount = preferenceService.getCurrentAccount();
+    const sites = permissionService.getSites();
+    sites.forEach((site) => {
+      if (enabled) {
+        if (site.isConnected) {
+          permissionService.setSite({
+            ...site,
+            account: currentAccount,
+          });
+        }
+      } else {
+        permissionService.setSite({
+          ...site,
+          account: undefined,
+        });
+      }
+    });
+    sessionService.broadcastEvent(
+      'accountsChanged',
+      currentAccount?.address ? [currentAccount?.address] : [],
+      undefined,
+      undefined,
+      false
+    );
+  };
+
+  setBiometricUnlock = (payload: {
+    enabled: boolean;
+    credentialId?: string;
+    encryptedPassword?: string;
+    iv?: string;
+  }) => {
+    if (!payload.enabled) {
+      preferenceService.clearBiometricUnlockStorage();
+      return;
+    }
+
+    preferenceService.setPreferencePartials({
+      biometricUnlockEnabled: true,
+      biometricUnlockCredentialId: payload.credentialId || '',
+      biometricUnlockEncryptedPassword: payload.encryptedPassword || '',
+      biometricUnlockIv: payload.iv || '',
+    });
+  };
+
+  setUnlockPreferredMethod = (method: UnlockPreferredMethod) => {
+    if (!['password', 'biometric'].includes(method)) {
+      return;
+    }
+    preferenceService.setPreferencePartials({
+      unlockPreferredMethod: method,
+    });
+  };
+
+  updateGa4EventTime = (timestamp: number) => {
+    preferenceService.setPreferencePartials({ ga4EventTime: timestamp });
+  };
+
+  switchSceneAccount = ({
+    scene,
+    account,
+  }: {
+    scene: AccountScene;
+    account: Account;
+  }) => {
+    const prev = preferenceService.getPreference('sceneAccountMap') || {};
+    preferenceService.setPreferencePartials({
+      sceneAccountMap: { ...prev, [scene]: account },
+    });
+    const config = SCENE_ACCOUNT_CONFIG[scene];
+    if (config?.dapps) {
+      config.dapps.forEach((origin) => {
+        sessionService.broadcastEvent(
+          'accountsChanged',
+          [account.address],
+          origin,
+          undefined,
+          true
+        );
+      });
+    }
+  };
+
+  getLastTimeSendToken = () => preferenceService.getLastTimeSendToken();
+  setLastTimeSendToken = (token: TokenItem) =>
+    preferenceService.setLastTimeSendToken(token);
 
   getTokenApprovalChain = (address: string) =>
     preferenceService.getTokenApprovalChain(address);
@@ -1108,8 +2478,16 @@ export class WalletController extends BaseController {
   getLastSelectedGasTopUpChain = preferenceService.getLastSelectedGasTopUpChain;
   setLastSelectedGasTopUpChain = preferenceService.setLastSelectedGasTopUpChain;
 
+  getAddressSortStoreValue = preferenceService.getAddressSortStoreValue;
+  setAddressSortStoreValue = preferenceService.setAddressSortStoreValue;
+
   getLastSelectedSwapChain = swapService.getSelectedChain;
   setLastSelectedSwapChain = swapService.setSelectedChain;
+  getSelectedFromToken = swapService.getSelectedFromToken;
+  getSelectedToToken = swapService.getSelectedToToken;
+  setSelectedFromToken = swapService.setSelectedFromToken;
+  setSelectedToToken = swapService.setSelectedToToken;
+
   getSwap = swapService.getSwap;
   getSwapGasCache = swapService.getLastTimeGasSelection;
   updateSwapGasCache = swapService.updateLastTimeGasSelection;
@@ -1121,15 +2499,198 @@ export class WalletController extends BaseController {
   setSwapTrade = swapService.setSwapTrade;
   getSwapViewList = swapService.getSwapViewList;
   getSwapTradeList = swapService.getSwapTradeList;
+  getSwapSortIncludeGasFee = swapService.getSwapSortIncludeGasFee;
+  setSwapSortIncludeGasFee = swapService.setSwapSortIncludeGasFee;
+  getSwapPreferMEVGuarded = swapService.getSwapPreferMEVGuarded;
+  setSwapPreferMEVGuarded = swapService.setSwapPreferMEVGuarded;
+  setAutoSlippage = swapService.setAutoSlippage;
+  setIsCustomSlippage = swapService.setIsCustomSlippage;
+  setSlippage = swapService.setSlippage;
+  getRecentSwapToTokens = swapService.getRecentSwapToTokens;
+  setRecentSwapToToken = swapService.setRecentSwapToToken;
 
-  setCustomRPC = RPCService.setRPC;
-  removeCustomRPC = RPCService.removeCustomRPC;
+  setRedirect2Points = RabbyPointsService.setRedirect2Points;
+  setRabbyPointsSignature = RabbyPointsService.setSignature;
+  getRabbyPointsSignature = RabbyPointsService.getSignature;
+  clearRabbyPointsSignature = RabbyPointsService.clearSignature;
+
+  getLastSelectedLendingChain = lendingService.getLastSelectedChain;
+  setLastSelectedLendingChain = lendingService.setLastSelectedChain;
+  getSkipHealthFactorWarning = lendingService.getSkipHealthFactorWarning;
+  setSkipHealthFactorWarning = lendingService.setSkipHealthFactorWarning;
+
+  addHDKeyRingLastAddAddrTime = HDKeyRingLastAddAddrTimeService.addUnixRecord;
+  getHDKeyRingLastAddAddrTimeStore = HDKeyRingLastAddAddrTimeService.getStore;
+
+  getBridgeData = bridgeService.getBridgeData;
+  getBridgeAggregators = bridgeService.getBridgeAggregators;
+  setBridgeAggregators = bridgeService.setBridgeAggregators;
+  getBridgeUnlimitedAllowance = bridgeService.getUnlimitedAllowance;
+  setBridgeUnlimitedAllowance = bridgeService.setUnlimitedAllowance;
+  setBridgeSelectedChain = bridgeService.setSelectedChain;
+  setBridgeSelectedFromToken = bridgeService.setSelectedFromToken;
+  setBridgeSelectedToToken = bridgeService.setSelectedToToken;
+  getBridgeSortIncludeGasFee = bridgeService.getBridgeSortIncludeGasFee;
+  setBridgeSortIncludeGasFee = bridgeService.setBridgeSortIncludeGasFee;
+  setBridgeSettingFirstOpen = bridgeService.setBridgeSettingFirstOpen;
+
+  getGasAccountData(): GasAccountServiceStore;
+  getGasAccountData<K extends keyof GasAccountServiceStore>(
+    key: K
+  ): GasAccountServiceStore[K];
+  getGasAccountData(key?: keyof GasAccountServiceStore) {
+    return key
+      ? gasAccountService.getGasAccountData(key)
+      : gasAccountService.getGasAccountData();
+  }
+  getGasAccountSig = gasAccountService.getGasAccountSig;
+  setGasAccountSig = gasAccountService.setGasAccountSig;
+  discoverGasAccountRuntimeState = async (
+    options?: { force?: boolean } | null
+  ) => {
+    const NON_SWITCHABLE_GAS_ACCOUNT_TYPES = new Set<string>([
+      KEYRING_CLASS.WATCH,
+      KEYRING_CLASS.GNOSIS,
+      KEYRING_CLASS.CoboArgus,
+    ]);
+
+    const isGasAccountSwitchableType = (type?: string) =>
+      !!type && !NON_SWITCHABLE_GAS_ACCOUNT_TYPES.has(type);
+
+    const visibleAccounts = (
+      await this.getAllVisibleAccountsArray()
+    ).filter((account) => isGasAccountSwitchableType(account.type));
+
+    const currentGasAccount = gasAccountService.getGasAccountData('account');
+
+    const accountsWithCachedBalance = await Promise.all(
+      visibleAccounts.map(async (account) => {
+        const cachedBalance = await this.getAddressCacheBalance(
+          account.address
+        );
+
+        return {
+          account,
+          balance: Number(cachedBalance?.total_usd_value || 0),
+        };
+      })
+    );
+    const accounts = sortBy(accountsWithCachedBalance, [
+      (item) => -item.balance,
+    ])
+      .slice(
+        0,
+        GAS_ACCOUNT_DISCOVERY_TOP_BALANCE_ACCOUNT_LIMIT > 0
+          ? GAS_ACCOUNT_DISCOVERY_TOP_BALANCE_ACCOUNT_LIMIT
+          : accountsWithCachedBalance.length
+      )
+      .map((item) => item.account);
+    const currentGasAccountInVisibleAccounts = currentGasAccount
+      ? visibleAccounts.find(
+          (account) =>
+            isSameAddress(account.address, currentGasAccount.address) &&
+            account.type === currentGasAccount.type
+        )
+      : undefined;
+
+    if (
+      currentGasAccountInVisibleAccounts &&
+      !accounts.some(
+        (account) =>
+          isSameAddress(
+            account.address,
+            currentGasAccountInVisibleAccounts.address
+          ) && account.type === currentGasAccountInVisibleAccounts.type
+      )
+    ) {
+      accounts.push(currentGasAccountInVisibleAccounts);
+    }
+
+    return discoverGasAccountRuntimeState(accounts, options);
+  };
+  setGasAccountBalanceState = (accountId?: string, hasBalance?: boolean) => {
+    gasAccountService.setCurrentBalanceState(accountId, hasBalance);
+  };
+
+  trackGasAccountActiveStatus = async () => {
+    const { sig, accountId } = this.getGasAccountSig();
+    return trackCurrentGasAccountActiveStatus(sig, accountId);
+  };
+
+  trackGasAccountActiveStatusOncePerDay = async () => {
+    if (gasAccountService.hasTrackedGa4ActiveToday()) {
+      return false;
+    }
+
+    const tracked = await this.trackGasAccountActiveStatus();
+    if (tracked) {
+      gasAccountService.markGa4ActiveTracked();
+    }
+
+    return tracked;
+  };
+
+  handleGasAccountLoginSuccess = async (
+    signature: string,
+    account: Account,
+    options?: {
+      redirectToGasAccount?: boolean;
+    }
+  ) => {
+    await syncGasAccountLoginSuccess(signature, account, options);
+  };
+
+  getCloseTipsChains = OfflineChainsService.getCloseTipsChains;
+  setCloseTipsChains = OfflineChainsService.setCloseTipsChains;
+
+  getRetryTxType = bgRetryTxMethods.getRetryTxType;
+  setRetryTxType = bgRetryTxMethods.setRetryTxType;
+  retryTxReset = bgRetryTxMethods.retryTxReset;
+  getRetryTxRecommendNonce = bgRetryTxMethods.getRetryTxRecommendNonce;
+  setRetryTxRecommendNonce = bgRetryTxMethods.setRetryTxRecommendNonce;
+  getTxFailedResult = bgRetryTxMethods.getTxFailedResult;
+
+  setCustomRPC = (chainEnum: CHAINS_ENUM, url: string) => {
+    RPCService.setRPC(chainEnum, url);
+    const chain = findChain({
+      enum: chainEnum,
+    });
+    if (chain?.isTestnet && RPCService.hasCustomRPC(chainEnum)) {
+      customTestnetService.setCustomRPC({ chainId: chain.id, url: url });
+    }
+  };
+  removeCustomRPC = (chainEnum: CHAINS_ENUM) => {
+    RPCService.removeCustomRPC(chainEnum);
+    const chain = findChain({
+      enum: chainEnum,
+    });
+    if (chain?.isTestnet) {
+      customTestnetService.removeCustomRPC(chain.id);
+    }
+  };
   getAllCustomRPC = RPCService.getAllRPC;
   getCustomRpcByChain = RPCService.getRPCByChain;
   pingCustomRPC = RPCService.ping;
-  setRPCEnable = RPCService.setRPCEnable;
+  setRPCEnable = (chainEnum: CHAINS_ENUM, enable: boolean) => {
+    RPCService.setRPCEnable(chainEnum, enable);
+    const chain = findChain({
+      enum: chainEnum,
+    });
+    if (chain?.isTestnet) {
+      if (enable) {
+        customTestnetService.setCustomRPC({
+          chainId: chain.id,
+          url: RPCService.getRPCByChain(chainEnum).url,
+        });
+      } else {
+        customTestnetService.removeCustomRPC(chain.id);
+      }
+    }
+  };
   validateRPC = async (url: string, chainId: number) => {
-    const chain = Object.values(CHAINS).find((item) => item.id === chainId);
+    const chain = findChain({
+      id: chainId,
+    });
     if (!chain) throw new Error(`ChainId ${chainId} is not supported`);
     const [_, rpcChainId] = await Promise.all([
       RPCService.ping(chain.enum),
@@ -1137,6 +2698,10 @@ export class WalletController extends BaseController {
     ]);
     return chainId === Number(rpcChainId);
   };
+
+  hasCustomRPC = RPCService.hasCustomRPC;
+
+  syncDefaultRPC = RPCService.syncDefaultRPC;
 
   /* chains */
   getSavedChains = () => preferenceService.getSavedChains();
@@ -1147,6 +2712,7 @@ export class WalletController extends BaseController {
   getConnectedSite = permissionService.getConnectedSite;
   getSite = permissionService.getSite;
   getConnectedSites = permissionService.getConnectedSites;
+  getSites = permissionService.getSites;
   setRecentConnectedSites = (sites: ConnectedSite[]) => {
     permissionService.setRecentConnectedSites(sites);
   };
@@ -1181,29 +2747,88 @@ export class WalletController extends BaseController {
       return null;
     }
   };
-  setSite = (data: ConnectedSite) => {
-    const chainItem = findChainByEnum(data.chain);
+  setSite = (
+    data: ConnectedSite,
+    options?: {
+      shouldBroadcastEvent?: false;
+    }
+  ) => {
+    const chainItem = findChain({ enum: data.chain });
     if (!chainItem) {
       throw new Error(`[wallet::setSite] Chain ${data.chain} is not supported`);
     }
-
+    if (data.isConnected && !data.account) {
+      data.account = preferenceService.getCurrentAccount();
+    }
     permissionService.setSite(data);
-    if (data.isConnected) {
-      // rabby:chainChanged event must be sent before chainChanged event
+    broadcastChainChanged({
+      origin: data.origin,
+      chain: chainItem,
+    });
+  };
+
+  setSiteAccount = ({
+    origin,
+    account,
+  }: {
+    origin: string;
+    account?: Account | null;
+  }) => {
+    const site = permissionService.getSite(origin);
+    if (!site) {
+      return;
+    }
+    const _account = account || preferenceService.getCurrentAccount();
+
+    site.account = _account
+      ? pick(_account, 'address', 'type', 'brandName')
+      : undefined;
+    permissionService.setSite(site);
+
+    if (site?.isConnected) {
       sessionService.broadcastEvent(
-        'rabby:chainChanged',
-        chainItem,
-        data.origin
-      );
-      sessionService.broadcastEvent(
-        'chainChanged',
-        {
-          chain: chainItem.hex,
-          networkVersion: chainItem.network,
-        },
-        data.origin
+        'accountsChanged',
+        site?.account?.address ? [site.account.address.toLowerCase()] : [],
+        site.origin,
+        undefined,
+        false
       );
     }
+  };
+
+  updateSiteBasicInfo = async (origin: string | string[]) => {
+    if (!origin?.length) {
+      return [];
+    }
+
+    const origins = Array.isArray(origin) ? origin : [origin];
+    const infoList = await this.openapi.getDappsInfo({
+      ids: origins.map((item) => item.replace(/^https?:\/\//, '')),
+    });
+
+    return origins
+      .map((origin) => {
+        const local = permissionService.getSite(origin);
+        const id = origin.replace(/^https?:\/\//, '');
+        const info = infoList.find((item) => item.id === id) || {
+          id,
+          name: local?.name || '',
+          logo_url: local?.icon || '',
+          description: '',
+          user_range: '',
+          tags: [],
+          chain_ids: [],
+        };
+        if (local) {
+          const item: ConnectedSite = {
+            ...local,
+            info,
+          };
+          permissionService.setSite(item);
+          return item;
+        }
+      })
+      .filter((v): v is ConnectedSite => !!v);
   };
   removePreferMetamask = (origin: string) => {
     const site = permissionService.getSite(origin);
@@ -1215,19 +2840,20 @@ export class WalletController extends BaseController {
     );
     site.preferMetamask = false;
     permissionService.setSite(site);
-    contextMenuService.createOrUpdate(site.origin);
     const currentIsDefaultWallet = preferenceService.getIsDefaultWallet(origin);
     const hasOtherProvider = preferenceService.getHasOtherProvider();
     if (prevIsDefaultWallet !== currentIsDefaultWallet && hasOtherProvider) {
       sessionService.broadcastEvent(
         'defaultWalletChanged',
         currentIsDefaultWallet ? 'rabby' : 'metamask',
-        site.origin
+        site.origin,
+        undefined,
+        false
       );
     }
   };
   updateConnectSite = (origin: string, data: ConnectedSite) => {
-    const chainItem = findChainByEnum(data.chain);
+    const chainItem = findChain({ enum: data.chain });
 
     if (!chainItem) {
       throw new Error(
@@ -1236,17 +2862,13 @@ export class WalletController extends BaseController {
     }
 
     permissionService.updateConnectSite(origin, data);
-    // rabby:chainChanged event must be sent before chainChanged event
-    sessionService.broadcastEvent('rabby:chainChanged', chainItem, data.origin);
-    sessionService.broadcastEvent(
-      'chainChanged',
-      {
-        chain: chainItem.hex,
-        networkVersion: chainItem.network,
-      },
-      data.origin
-    );
+
+    broadcastChainChanged({
+      origin: data.origin,
+      chain: chainItem,
+    });
   };
+  addConnectedSiteV2 = permissionService.addConnectedSiteV2;
   removeAllRecentConnectedSites = () => {
     const sites = permissionService
       .getRecentConnectedSites()
@@ -1260,14 +2882,53 @@ export class WalletController extends BaseController {
     permissionService.removeConnectedSite(origin);
   };
   getSitesByDefaultChain = permissionService.getSitesByDefaultChain;
+  /**
+   * @deprecated
+   */
   getPreferMetamaskSites = permissionService.getPreferMetamaskSites;
+  getMetamaskModeSites = permissionService.getMetamaskModeSites;
+  addMetamaskModeSite = (site: ConnectedSite) => {
+    permissionService.setSite({
+      ...site,
+      isMetamaskMode: true,
+    });
+    metamaskModeService.localSites.push(
+      site.origin.replace(/^https?:\/\//, '')
+    );
+  };
+  removeMetamaskModeSite = (site: ConnectedSite) => {
+    permissionService.setSite({
+      ...site,
+      isMetamaskMode: false,
+    });
+    metamaskModeService.localSites = metamaskModeService.localSites.filter(
+      (item) => item !== site.origin.replace(/^https?:\/\//, '')
+    );
+  };
   topConnectedSite = (origin: string) =>
     permissionService.topConnectedSite(origin);
   unpinConnectedSite = (origin: string) =>
     permissionService.unpinConnectedSite(origin);
+  favoriteWebsite = (origin: string) =>
+    permissionService.favoriteWebsite(origin);
+  unFavoriteWebsite = (origin: string) =>
+    permissionService.unFavoriteWebsite(origin);
   /* keyrings */
 
   clearKeyrings = () => keyringService.clearKeyrings();
+
+  getSafePendingTransactions = async (
+    address: string,
+    networkId: string,
+    nonce: number
+  ) => {
+    const pendingTxs = await Safe.getPendingTransactions(
+      address,
+      networkId,
+      nonce
+    );
+    return pendingTxs;
+  };
 
   importGnosisAddress = async (address: string, networkIds: string[]) => {
     let keyring, isNewKey;
@@ -1303,15 +2964,15 @@ export class WalletController extends BaseController {
 
   fetchGnosisChainList = (address: string) => {
     if (!isAddress(address)) {
-      return Promise.reject(new Error('Not a valid address'));
+      return Promise.reject(new Error(t('background.error.invalidAddress')));
     }
     return Promise.all(
-      GNOSIS_SUPPORT_CHAINS.map(async (chainEnum) => {
-        const chain = CHAINS[chainEnum];
+      ensureChainListValid(GNOSIS_SUPPORT_CHAINS).map(async (chainEnum) => {
+        const chain = findChain({ enum: chainEnum });
         try {
           const safe = await createSafeService({
             address,
-            networkId: chain.network,
+            networkId: chain!.network,
           });
           const owners = await safe.getOwners();
           if (owners) {
@@ -1348,16 +3009,29 @@ export class WalletController extends BaseController {
     }
     const networks = keyring.networkIdsMap[address];
     const chainList = await this.fetchGnosisChainList(address);
-    keyring.setNetworkIds(
-      address,
-      uniq((networks || []).concat(chainList.map((chain) => chain.network)))
+    const nextNetworks = uniq(
+      (networks || []).concat(chainList.map((chain) => chain.network))
     );
+    const isSame = isEqual(sortBy(networks), sortBy(nextNetworks));
+    if (isSame) {
+      return;
+    }
+    keyring.setNetworkIds(address, nextNetworks);
+    await keyringService.persistAllKeyrings();
   };
 
   clearGnosisTransaction = () => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
     if (keyring.currentTransaction || keyring.safeInstance) {
       keyring.currentTransaction = null;
+      keyring.safeInstance = null;
+    }
+  };
+
+  clearGnosisMessage = () => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (keyring.currentSafeMessage || keyring.safeInstance) {
+      keyring.currentSafeMessage = null;
       keyring.safeInstance = null;
     }
   };
@@ -1414,19 +3088,20 @@ export class WalletController extends BaseController {
   ) => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
     if (keyring) {
-      buildinProvider.currentProvider.currentAccount = account.address;
-      buildinProvider.currentProvider.currentAccountType = account.type;
-      buildinProvider.currentProvider.currentAccountBrand = account.brandName;
-      buildinProvider.currentProvider.chainId = networkId;
+      const currentProvider = new EthereumProvider();
+      currentProvider.currentAccount = account.address;
+      currentProvider.currentAccountType = account.type;
+      currentProvider.currentAccountBrand = account.brandName;
+      currentProvider.chainId = networkId;
       await keyring.buildTransaction(
         safeAddress,
         tx,
-        new ethers.providers.Web3Provider(buildinProvider.currentProvider),
+        new ethers.providers.Web3Provider(currentProvider),
         version,
         networkId
       );
     } else {
-      throw new Error('No Gnosis keyring found');
+      throw new Error(t('background.error.notFoundGnosisKeyring'));
     }
   };
 
@@ -1463,14 +3138,14 @@ export class WalletController extends BaseController {
         hash
       );
     } else {
-      throw new Error('No Gnosis keyring found');
+      throw new Error(t('background.error.notFoundGnosisKeyring'));
     }
   };
 
   postGnosisTransaction = () => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
     if (!keyring || !keyring.currentTransaction) {
-      throw new Error('No transaction in Gnosis keyring found');
+      throw new Error(t('background.error.notFoundTxGnosisKeyring'));
     }
     return keyring.postTransaction();
   };
@@ -1478,7 +3153,7 @@ export class WalletController extends BaseController {
   getGnosisAllPendingTxs = async (address: string) => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
     if (!keyring) {
-      throw new Error('No Gnosis keyring found');
+      throw new Error(t('background.error.notFoundGnosisKeyring'));
     }
     const networks = keyring.networkIdsMap[address];
     if (!networks || !networks.length) {
@@ -1486,23 +3161,25 @@ export class WalletController extends BaseController {
     }
     const results = await Promise.all(
       networks.map(async (networkId) => {
-        try {
-          const safe = await createSafeService({
-            networkId: networkId,
-            address,
-          });
-          const { results } = await safe.getPendingTransactions();
-          return {
-            networkId,
-            txs: results,
-          };
-        } catch (e) {
-          console.error(e);
-          return {
-            networkId,
-            txs: [],
-          };
-        }
+        return gnosisPQueue.add(async () => {
+          try {
+            const safe = await createSafeService({
+              networkId: networkId,
+              address,
+            });
+            const { results } = await safe.getPendingTransactions();
+            return {
+              networkId,
+              txs: results,
+            };
+          } catch (e) {
+            console.error(e);
+            return {
+              networkId,
+              txs: [],
+            };
+          }
+        });
       })
     );
 
@@ -1516,6 +3193,65 @@ export class WalletController extends BaseController {
     };
   };
 
+  getGnosisAllPendingMessages = async (address: string) => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (!keyring) {
+      throw new Error(t('background.error.notFoundGnosisKeyring'));
+    }
+    const networks = keyring.networkIdsMap[address.toLowerCase()];
+    if (!networks || !networks.length) {
+      return null;
+    }
+    const safeAddress = toChecksumAddress(address);
+    const results = await Promise.all(
+      networks.map(async (networkId) => {
+        return gnosisPQueue.add(async () => {
+          try {
+            const safe = await createSafeService({
+              networkId: networkId,
+              address: safeAddress,
+            });
+            const threshold = await safe.getThreshold();
+            const { results } = await safe.getMessages();
+            return {
+              networkId,
+              messages: results.filter(
+                (item) => item.confirmations.length < threshold
+              ),
+            };
+          } catch (e) {
+            console.error(e);
+            return {
+              networkId,
+              messages: [],
+            };
+          }
+        });
+      })
+    );
+
+    const total = results.reduce((t, item) => {
+      return t + item.messages.length;
+    }, 0);
+
+    return {
+      total,
+      results,
+    };
+  };
+
+  getGnosisPendingTxs = async (address: string, networkId: string) => {
+    if (!networkId) {
+      return [];
+    }
+    const safe = await createSafeService({
+      networkId: networkId,
+      address,
+    });
+    const { results } = await safe.getPendingTransactions();
+    return results;
+  };
+
   getGnosisOwners = async (
     account: Account,
     safeAddress: string,
@@ -1523,7 +3259,7 @@ export class WalletController extends BaseController {
     networkId: string
   ) => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
-    if (!keyring) throw new Error('No Gnosis keyring found');
+    if (!keyring) throw new Error(t('background.error.notFoundGnosisKeyring'));
     const currentProvider = new EthereumProvider();
     currentProvider.currentAccount = account.address;
     currentProvider.currentAccountType = account.type;
@@ -1566,56 +3302,248 @@ export class WalletController extends BaseController {
   };
 
   execGnosisTransaction = async (account: Account) => {
-    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
-    if (keyring.currentTransaction && keyring.safeInstance) {
-      buildinProvider.currentProvider.currentAccount = account.address;
-      buildinProvider.currentProvider.currentAccountType = account.type;
-      buildinProvider.currentProvider.currentAccountBrand = account.brandName;
-      await keyring.execTransaction({
-        safeAddress: keyring.safeInstance.safeAddress,
-        transaction: keyring.currentTransaction,
-        networkId: keyring.safeInstance.network,
-        provider: new ethers.providers.Web3Provider(
-          buildinProvider.currentProvider
-        ),
-      });
+    try {
+      const keyring: GnosisKeyring = this._getKeyringByType(
+        KEYRING_CLASS.GNOSIS
+      );
+      if (keyring.currentTransaction && keyring.safeInstance) {
+        const currentProvider = new EthereumProvider();
+        currentProvider.currentAccount = account.address;
+        currentProvider.currentAccountType = account.type;
+        currentProvider.currentAccountBrand = account.brandName;
+        currentProvider.chainId = keyring.safeInstance.network;
+        await keyring.execTransaction({
+          safeAddress: keyring.safeInstance.safeAddress,
+          transaction: keyring.currentTransaction,
+          networkId: keyring.safeInstance.network,
+          provider: new ethers.providers.Web3Provider(currentProvider),
+        });
+      }
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   };
 
   gnosisGenerateTypedData = () => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
-    if (!keyring) throw new Error('No Gnosis keyring found');
+    if (!keyring) throw new Error(t('background.error.notFoundGnosisKeyring'));
     if (!keyring.currentTransaction) {
-      throw new Error('No transaction in Gnosis keyring');
+      throw new Error(t('background.error.notFoundTxGnosisKeyring'));
     }
     return keyring.generateTypedData();
   };
 
   gnosisAddConfirmation = async (address: string, signature: string) => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
-    if (!keyring) throw new Error('No Gnosis keyring found');
+    if (!keyring) throw new Error(t('background.error.notFoundGnosisKeyring'));
     if (!keyring.currentTransaction) {
-      throw new Error('No transaction in Gnosis keyring');
+      throw new Error(t('background.error.notFoundTxGnosisKeyring'));
     }
     await keyring.addConfirmation(address, signature);
   };
 
   gnosisAddPureSignature = async (address: string, signature: string) => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
-    if (!keyring) throw new Error('No Gnosis keyring found');
+    if (!keyring) throw new Error(t('background.error.notFoundGnosisKeyring'));
     if (!keyring.currentTransaction) {
-      throw new Error('No transaction in Gnosis keyring');
+      throw new Error(t('background.error.notFoundTxGnosisKeyring'));
     }
     await keyring.addPureSignature(address, signature);
   };
 
   gnosisAddSignature = async (address: string, signature: string) => {
     const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
-    if (!keyring) throw new Error('No Gnosis keyring found');
+    if (!keyring) throw new Error(t('background.error.notFoundGnosisKeyring'));
     if (!keyring.currentTransaction) {
-      throw new Error('No transaction in Gnosis keyring');
+      throw new Error(t('background.error.notFoundTxGnosisKeyring'));
     }
     await keyring.addSignature(address, signature);
+  };
+
+  buildGnosisMessage = async ({
+    account,
+    safeAddress,
+    networkId,
+    version,
+    message,
+  }: {
+    safeAddress: string;
+    account: Account;
+    version: string;
+    networkId: string;
+    message: string | Record<string, any>;
+  }) => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (keyring) {
+      const currentProvider = new EthereumProvider();
+      currentProvider.currentAccount = account.address;
+      currentProvider.currentAccountType = account.type;
+      currentProvider.currentAccountBrand = account.brandName;
+      currentProvider.chainId = networkId;
+      return keyring.buildMessage({
+        address: safeAddress,
+        provider: new ethers.providers.Web3Provider(currentProvider),
+        version,
+        networkId,
+        message: message as any,
+      });
+    } else {
+      throw new Error(t('background.error.notFoundGnosisKeyring'));
+    }
+  };
+
+  getGnosisSafeMessageInfo = () => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (!keyring) {
+      throw new Error(t('background.error.notFoundGnosisKeyring'));
+    }
+    return keyring.getMessageInfo();
+  };
+
+  addGnosisMessage = async ({
+    signerAddress,
+    signature,
+  }: {
+    signerAddress: string;
+    signature: string;
+  }) => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (!keyring) throw new Error(t('background.error.notFoundGnosisKeyring'));
+    return keyring.addMessage({
+      signerAddress,
+      signature,
+    });
+  };
+
+  addGnosisMessageSignature = async ({
+    signerAddress,
+    signature,
+  }: {
+    signerAddress: string;
+    signature: string;
+  }) => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (!keyring) throw new Error(t('background.error.notFoundGnosisKeyring'));
+    return keyring.addMessageSignature({
+      signerAddress,
+      signature,
+    });
+  };
+
+  handleGnosisMessage = async ({
+    signerAddress,
+    signature,
+  }: {
+    signerAddress: string;
+    signature: string;
+  }) => {
+    const sigs = this.getGnosisMessageSignatures();
+    if (sigs.length > 0) {
+      await wallet.addGnosisMessageSignature({
+        signature: signature,
+        signerAddress: signerAddress,
+      });
+    } else {
+      await wallet.addGnosisMessage({
+        signature: signature,
+        signerAddress: signerAddress,
+      });
+    }
+  };
+
+  addPureGnosisMessageSignature = async ({
+    signerAddress,
+    signature,
+  }: {
+    signerAddress: string;
+    signature: string;
+  }) => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (!keyring) throw new Error(t('background.error.notFoundGnosisKeyring'));
+    return keyring.addPureMessageSignature({
+      signerAddress,
+      signature,
+    });
+  };
+
+  getGnosisMessage = async ({
+    chainId,
+    messageHash,
+  }: {
+    chainId: number;
+    messageHash: string;
+  }) => {
+    return Safe.getMessage(messageHash, String(chainId));
+  };
+
+  getGnosisMessageHash = async ({
+    safeAddress,
+    chainId,
+    message,
+  }: {
+    safeAddress: string;
+    chainId: number;
+    message: string | Record<string, any>;
+  }) => {
+    const safe = await createSafeService({
+      address: safeAddress,
+      networkId: String(chainId),
+    });
+    return safe.getSafeMessageHash(hashSafeMessage(message as any));
+  };
+
+  getGnosisMessageSignatures = () => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (keyring.currentSafeMessage) {
+      const sigs = Array.from(keyring.currentSafeMessage.signatures.values());
+      return sigs.map((sig) => ({ data: sig.data, signer: sig.signer }));
+    }
+    return [];
+  };
+
+  validateGnosisMessage = async (
+    {
+      address,
+      chainId,
+      message,
+    }: {
+      address: string;
+      chainId: number;
+      message: string | Record<string, any>;
+    },
+    hash: string
+  ) => {
+    const keyring: GnosisKeyring = this._getKeyringByType(KEYRING_CLASS.GNOSIS);
+    if (!keyring) {
+      throw new Error(t('background.error.notFoundGnosisKeyring'));
+    }
+
+    if (
+      !keyring.accounts.find(
+        (account) => account.toLowerCase() === address.toLowerCase()
+      )
+    ) {
+      throw new Error('Can not find this address');
+    }
+    const checksumAddress = toChecksumAddress(address);
+
+    const safe = await createSafeService({
+      address: checksumAddress,
+      networkId: String(chainId),
+    });
+    const currentSafeMessageHash = await safe.getSafeMessageHash(
+      hashSafeMessage(message as any)
+    );
+    return currentSafeMessageHash === hash;
+  };
+
+  hasConfirmSafeSelfHost = (networkId: string) => {
+    return preferenceService.hasConfirmSafeSelfHost(networkId);
+  };
+
+  setConfirmSafeSelfHost = (networkId: string) => {
+    preferenceService.setConfirmSafeSelfHost(networkId);
   };
 
   /**
@@ -1642,9 +3570,21 @@ export class WalletController extends BaseController {
   };
 
   importWatchAddress = async (address: string) => {
-    const keyring = await this.addWatchAddressOnly(address);
-
-    return this._setCurrentAccountFromKeyring(keyring, -1);
+    try {
+      const keyring = await this.addWatchAddressOnly(address);
+      return this._setCurrentAccountFromKeyring(keyring, -1);
+    } catch (error) {
+      if (error.message?.includes?.('duplicate')) {
+        throw new Error(
+          JSON.stringify({
+            address,
+            anchor: 'DuplicateAccountError',
+          })
+        );
+      } else {
+        throw error;
+      }
+    }
   };
 
   getWalletConnectStatus = (address: string, brandName: string) => {
@@ -1660,17 +3600,11 @@ export class WalletController extends BaseController {
     return null;
   };
 
-  resendWalletConnect = () => {
-    const keyringType = KEYRING_CLASS.WALLETCONNECT;
-    const keyring: WalletConnectKeyring = this._getKeyringByType(keyringType);
-    if (keyring) {
-      return keyring.resend();
-    }
-    return null;
-  };
-
   getWalletConnectSessionStatus = (address: string, brandName: string) => {
-    const keyringType = KEYRING_CLASS.WALLETCONNECT;
+    const keyringType =
+      brandName === KEYRING_CLASS.Coinbase
+        ? KEYRING_CLASS.Coinbase
+        : KEYRING_CLASS.WALLETCONNECT;
     try {
       const keyring: WalletConnectKeyring = this._getKeyringByType(keyringType);
       if (keyring) {
@@ -1695,7 +3629,10 @@ export class WalletController extends BaseController {
   };
 
   getWalletConnectSessionAccount = (address: string, brandName: string) => {
-    const keyringType = KEYRING_CLASS.WALLETCONNECT;
+    const keyringType =
+      brandName === KEYRING_CLASS.Coinbase
+        ? KEYRING_CLASS.Coinbase
+        : KEYRING_CLASS.WALLETCONNECT;
     try {
       const keyring: WalletConnectKeyring = this._getKeyringByType(keyringType);
       if (keyring) {
@@ -1707,7 +3644,38 @@ export class WalletController extends BaseController {
     return null;
   };
 
-  initWalletConnect = async (brandName: string, curStashId?: number | null) => {
+  walletConnectSwitchChain = async (account: Account, chainId: number) => {
+    const keyringType =
+      account.brandName === KEYRING_CLASS.Coinbase
+        ? KEYRING_CLASS.Coinbase
+        : KEYRING_CLASS.WALLETCONNECT;
+    try {
+      const keyring = this._getKeyringByType(keyringType);
+      if (keyring) {
+        await keyring.switchEthereumChain(
+          account.brandName,
+          chainId,
+          account.address
+        );
+      }
+    } catch (e) {
+      // ignore
+      console.log('walletconnect error', e);
+      this.killWalletConnectConnector(account.address, account.brandName, true);
+    }
+    return null;
+  };
+
+  _currentWalletConnectStashId?: undefined | null | number;
+
+  initWalletConnect = async (
+    brandName: string,
+    curStashId?: number | null,
+    chainId = 1
+  ) => {
+    if (!curStashId && this._currentWalletConnectStashId) {
+      curStashId = this._currentWalletConnectStashId;
+    }
     let keyring: WalletConnectKeyring, isNewKey;
     const keyringType = KEYRING_CLASS.WALLETCONNECT;
     try {
@@ -1719,28 +3687,27 @@ export class WalletController extends BaseController {
       }
     } catch {
       const WalletConnect = keyringService.getKeyringClassForType(keyringType);
-      keyring = new WalletConnect({
-        accounts: [],
-        brandName: brandName,
-        // 1h
-        maxDuration: 3600000,
-        clientMeta: {
-          description: i18n.t('appDescription'),
-          url: 'https://rabby.io',
-          icons: ['https://rabby.io/assets/images/logo.png'],
-          name: 'Rabby',
-        },
-      });
+      keyring = new WalletConnect(GET_WALLETCONNECT_CONFIG());
       isNewKey = true;
     }
-    const { uri } = await keyring.initConnector(brandName);
+    keyring.initConnector(
+      brandName,
+      getChainList('mainnet').map((item) => item.id)
+    );
     let stashId = curStashId;
     if (isNewKey) {
       stashId = this.addKeyringToStash(keyring);
       eventBus.addEventListener(
         EVENTS.WALLETCONNECT.INIT,
-        ({ address, brandName }) => {
-          (keyring as WalletConnectKeyring).init(address, brandName);
+        ({ address, brandName, type }) => {
+          if (type !== KEYRING_CLASS.WALLETCONNECT) {
+            return;
+          }
+          (keyring as WalletConnectKeyring).init(
+            address,
+            brandName,
+            allChainIds
+          );
         }
       );
       (keyring as WalletConnectKeyring).on('inited', (uri) => {
@@ -1789,44 +3756,10 @@ export class WalletController extends BaseController {
         Sentry.captureException(error);
       });
     }
+    this._currentWalletConnectStashId = stashId;
     return {
-      uri,
       stashId,
     };
-  };
-
-  getWalletConnectBridge = (address: string, brandName: string) => {
-    const keyringType = KEYRING_CLASS.WALLETCONNECT;
-    const keyring: WalletConnectKeyring = this._getKeyringByType(keyringType);
-    if (keyring) {
-      const target = keyring.accounts.find(
-        (account) =>
-          account.address.toLowerCase() === address.toLowerCase() &&
-          brandName === account.brandName
-      );
-
-      if (target) return target.bridge;
-
-      return null;
-    }
-    return null;
-  };
-
-  getWalletConnectConnectors = () => {
-    const keyringType = KEYRING_CLASS.WALLETCONNECT;
-    const keyring: WalletConnectKeyring = this._getKeyringByType(keyringType);
-    if (keyring) {
-      const result: { address: string; brandName: string }[] = [];
-      for (const key in keyring.connectors) {
-        const target = keyring.connectors[key];
-        result.push({
-          address: key.split('-')[1],
-          brandName: target.brandName,
-        });
-      }
-      return result;
-    }
-    return [];
   };
 
   killWalletConnectConnector = async (
@@ -1835,21 +3768,19 @@ export class WalletController extends BaseController {
     resetConnect: boolean,
     silent?: boolean
   ) => {
-    const keyringType = KEYRING_CLASS.WALLETCONNECT;
-    const keyring: WalletConnectKeyring = this._getKeyringByType(keyringType);
-    if (keyring) {
-      const connector =
-        keyring.connectors[`${brandName}-${address.toLowerCase()}`];
-      if (connector) {
-        await keyring.closeConnector(
-          connector.connector,
-          address,
-          brandName,
-          silent
-        );
+    try {
+      const keyringType =
+        brandName === KEYRING_CLASS.Coinbase
+          ? KEYRING_CLASS.Coinbase
+          : KEYRING_CLASS.WALLETCONNECT;
+      const keyring: WalletConnectKeyring = this._getKeyringByType(keyringType);
+      if (keyring) {
+        await keyring.closeConnector({ address, brandName }, silent);
         // reset onAfterConnect
-        if (resetConnect) keyring.onAfterConnect = null;
+        // if (resetConnect) keyring.resetConnect();
       }
+    } catch (e) {
+      // ignore me
     }
   };
 
@@ -1870,38 +3801,50 @@ export class WalletController extends BaseController {
     realBrandName?: string,
     realBrandUrl?: string
   ) => {
-    let keyring: WalletConnectKeyring, isNewKey;
-    const keyringType = KEYRING_CLASS.WALLETCONNECT;
-    if (stashId !== null && stashId !== undefined) {
-      keyring = stashKeyrings[stashId];
-      isNewKey = true;
-    } else {
+    try {
+      let keyring: WalletConnectKeyring, isNewKey;
+      const keyringType = KEYRING_CLASS.WALLETCONNECT;
       try {
         keyring = this._getKeyringByType(keyringType);
       } catch {
-        const WalletConnectKeyring = keyringService.getKeyringClassForType(
-          keyringType
-        );
-        keyring = new WalletConnectKeyring();
+        if (stashId !== null && stashId !== undefined) {
+          keyring = stashKeyrings[stashId];
+        } else {
+          const WalletConnectKeyring = keyringService.getKeyringClassForType(
+            keyringType
+          );
+          keyring = new WalletConnectKeyring(GET_WALLETCONNECT_CONFIG());
+        }
         isNewKey = true;
       }
+
+      keyring.setAccountToAdd({
+        address,
+        brandName,
+        realBrandName,
+        realBrandUrl,
+      });
+
+      if (isNewKey) {
+        await keyringService.addKeyring(keyring);
+      }
+
+      await keyringService.addNewAccount(keyring);
+
+      this.clearPageStateCache();
+      return this._setCurrentAccountFromKeyring(keyring, -1);
+    } catch (error) {
+      if (error.message?.includes?.('duplicate')) {
+        throw new Error(
+          JSON.stringify({
+            address,
+            anchor: 'DuplicateAccountError',
+          })
+        );
+      } else {
+        throw error;
+      }
     }
-
-    keyring.setAccountToAdd({
-      address,
-      brandName,
-      bridge,
-      realBrandName,
-      realBrandUrl,
-    });
-
-    if (isNewKey) {
-      await keyringService.addKeyring(keyring);
-    }
-
-    await keyringService.addNewAccount(keyring);
-    this.clearPageStateCache();
-    return this._setCurrentAccountFromKeyring(keyring, -1);
   };
 
   gridPlusIsConnect = () => {
@@ -1932,29 +3875,126 @@ export class WalletController extends BaseController {
     const serialized = await keyring.serialize();
     const seedWords = serialized.mnemonic;
 
-    this._lastGetAddress = address;
     return seedWords;
   };
 
-  _lastGetAddress = '';
+  checkSeedPhraseBackup = async (address: string) => {
+    const keyring = await keyringService.getKeyringForAccount(
+      address,
+      KEYRING_CLASS.MNEMONIC
+    );
 
-  getLastGetAddress = () => {
-    return this._lastGetAddress;
+    return keyring.hasBackup == null ? true : keyring.hasBackup;
   };
 
-  clearAddressPendingTransactions = (address: string) => {
-    transactionHistoryService.clearPendingTransactions(address);
-    transactionWatcher.clearPendingTx(address);
+  backupSeedPhraseConfirmed = async (address: string) => {
+    const keyring = await keyringService.getKeyringForAccount(
+      address,
+      KEYRING_CLASS.MNEMONIC
+    );
+    if (!keyring) {
+      throw new Error('Keyring not found');
+    }
+
+    keyring.hasBackup = true;
+    await keyringService.persistAllKeyrings();
+  };
+
+  clearAddressPendingTransactions = (address: string, chainId?: number) => {
+    transactionHistoryService.clearPendingTransactions(address, chainId);
+    transactionWatcher.clearPendingTx(address, chainId);
+    transactionBroadcastWatchService.clearPendingTx(address, chainId);
     return;
   };
 
-  importPrivateKey = async (data) => {
-    const privateKey = ethUtil.stripHexPrefix(data);
+  removeLocalPendingTx = ({
+    address,
+    nonce,
+    chainId,
+  }: {
+    address: string;
+    nonce: number;
+    chainId: number;
+  }) => {
+    transactionHistoryService.removeLocalPendingTx({
+      address,
+      nonce,
+      chainId,
+    });
+    transactionWatcher.removeLocalPendingTx({
+      address,
+      nonce,
+      chainId,
+    });
+    transactionBroadcastWatchService.removeLocalPendingTx({
+      address,
+      nonce,
+      chainId,
+    });
+    return;
+  };
+
+  clearAddressTransactions = (address: string) => {
+    transactionHistoryService.removeList(address);
+    return;
+  };
+
+  validatePrivateKey = async (data: string) => {
+    const privateKey = stripHexPrefix(data);
     const buffer = Buffer.from(privateKey, 'hex');
 
-    const error = new Error(i18n.t('the private key is invalid'));
+    const error = new Error(t('background.error.invalidPrivateKey'));
     try {
-      if (!ethUtil.isValidPrivate(buffer)) {
+      if (!isValidPrivate(buffer)) {
+        throw error;
+      }
+    } catch {
+      throw error;
+    }
+  };
+
+  importPrivateKeys = async (dataList: string[]) => {
+    const privateKeys = dataList.map((item) => stripHexPrefix(item));
+
+    for (const privateKey of privateKeys) {
+      const buffer = Buffer.from(privateKey, 'hex');
+      const error = new Error(t('background.error.invalidPrivateKey'));
+
+      try {
+        if (!isValidPrivate(buffer)) {
+          throw error;
+        }
+      } catch {
+        throw error;
+      }
+    }
+
+    const {
+      keyrings,
+      duplicateAddresses,
+    } = await keyringService.importPrivateKeys(privateKeys);
+    const accounts = await Promise.all(
+      keyrings.map((keyring) => this._getAccountFromKeyring(keyring))
+    );
+    const lastAccount = accounts[accounts.length - 1];
+
+    if (lastAccount) {
+      preferenceService.setCurrentAccount(lastAccount);
+    }
+
+    return {
+      accounts,
+      duplicateAddresses,
+    };
+  };
+
+  importPrivateKey = async (data) => {
+    const privateKey = stripHexPrefix(data);
+    const buffer = Buffer.from(privateKey, 'hex');
+
+    const error = new Error(t('background.error.invalidPrivateKey'));
+    try {
+      if (!isValidPrivate(buffer)) {
         throw error;
       }
     } catch {
@@ -1972,28 +4012,36 @@ export class WalletController extends BaseController {
     try {
       JSON.parse(content);
     } catch {
-      throw new Error(i18n.t('the input file is invalid'));
+      throw new Error(t('background.error.invalidJson'));
     }
 
-    let wallet;
+    let wallet: Wallet;
     try {
-      wallet = thirdparty.fromEtherWallet(content, password);
+      wallet = await thirdparty.fromEtherWallet(content, password);
     } catch (e) {
       wallet = await Wallet.fromV3(content, password, true);
     }
 
     const privateKey = wallet.getPrivateKeyString();
     const keyring = await keyringService.importPrivateKey(
-      ethUtil.stripHexPrefix(privateKey)
+      stripHexPrefix(privateKey)
     );
     return this._setCurrentAccountFromKeyring(keyring);
   };
-
+  generateMnemonic = () => keyringService.generateMnemonic();
   getPreMnemonics = () => keyringService.getPreMnemonics();
   generatePreMnemonic = () => keyringService.generatePreMnemonic();
   removePreMnemonics = () => keyringService.removePreMnemonics();
-  createKeyringWithMnemonics = async (mnemonic) => {
-    const keyring = await keyringService.createKeyringWithMnemonics(mnemonic);
+  createKeyringWithMnemonics = async (
+    mnemonic: string,
+    options?: {
+      hasBackup?: boolean;
+    }
+  ) => {
+    const keyring = await keyringService.createKeyringWithMnemonics(
+      mnemonic,
+      options
+    );
     keyringService.removePreMnemonics();
     // return this._setCurrentAccountFromKeyring(keyring);
   };
@@ -2026,15 +4074,39 @@ export class WalletController extends BaseController {
     );
   };
 
+  getAccountByAddress = async (address: string) => {
+    const addressList = await keyringService.getAllAdresses();
+    const accounts = addressList.filter((item) => {
+      return isSameAddress(item.address, address);
+    });
+    return last(
+      sortBy(accounts, (item) => {
+        if (item.type === KEYRING_TYPE.WatchAddressKeyring) {
+          return 0;
+        } else if (item.type === KEYRING_TYPE.WalletConnectKeyring) {
+          return 1;
+        } else {
+          return 2;
+        }
+      })
+    );
+  };
+
+  hasAddress = (address: string) => {
+    return keyringService.hasAddress(address);
+  };
+
   removeAddress = async (
     address: string,
     type: string,
     brand?: string,
     removeEmptyKeyrings?: boolean
   ) => {
+    await this.killWalletConnectConnector(address, brand || type, true, true);
+
     if (removeEmptyKeyrings) {
       const keyring = await keyringService.getKeyringForAccount(address, type);
-      this.removeKeyringFromStash(keyring);
+      this.removeMnemonicKeyringFromStash(keyring);
     }
 
     await keyringService.removeAccount(
@@ -2044,7 +4116,7 @@ export class WalletController extends BaseController {
       removeEmptyKeyrings
     );
     if (!(await keyringService.hasAddress(address))) {
-      // contactBookService.removeAlias(address);
+      contactBookService.removeAlias(address);
       whitelistService.removeWhitelist(address);
       transactionHistoryService.removeList(address);
       signTextHistoryService.removeList(address);
@@ -2052,16 +4124,54 @@ export class WalletController extends BaseController {
         address,
         brandName: brand || type,
       });
+      preferenceService.removeAddressBalance(address);
+      preferenceService.removeCurvePoints(address);
+      perpsService.removeAgentWallet(address);
+      this.forceExpireInMemoryAddressBalance(address);
     }
-    preferenceService.removeAddressBalance(address);
     const current = preferenceService.getCurrentAccount();
     if (
       current?.address === address &&
       current.type === type &&
       current.brandName === brand
     ) {
-      this.resetCurrentAccount();
+      await this.resetCurrentAccount();
     }
+    innerDappFrameService.removeAccountFromAllFrames(address, type, brand);
+
+    const sites = permissionService.getSites();
+    sites.forEach((item) => {
+      if (
+        item.account &&
+        isSameAccount(item.account, { address, type, brandName: brand || type })
+      ) {
+        this.setSiteAccount({
+          origin: item.origin,
+          account: preferenceService.getCurrentAccount(),
+        });
+      }
+    });
+
+    syncDbService.deleteForAddress(address);
+    historyDbService.deleteForAddress(address);
+    tokenDbService.deleteForAddress(address);
+    defiDbService.deleteForAddress(address);
+    appChainDbService.deleteForAddress(address);
+    balanceDbService.deleteForAddress(address);
+  };
+
+  removeAddresses = async (
+    payloads: [string, string, string | undefined, boolean | undefined][]
+  ) => {
+    await Promise.all(
+      payloads.map(([address, type, brand, removeEmptyKeyrings]) =>
+        this.removeAddress(address, type, brand, removeEmptyKeyrings)
+      )
+    );
+  };
+
+  removeContactInfo = (address: string) => {
+    contactBookService.removeAlias(address);
   };
 
   resetCurrentAccount = async () => {
@@ -2074,11 +4184,20 @@ export class WalletController extends BaseController {
   };
 
   getKeyringByMnemonic = (
-    mnemonic: string
-  ): (DisplayedKeryring & { index: number }) | undefined => {
-    return keyringService.keyrings.find((item) => {
-      return item.type === KEYRING_CLASS.MNEMONIC && item.mnemonic === mnemonic;
+    mnemonic: string,
+    passphrase = ''
+  ): HdKeyring | undefined => {
+    const keyring = keyringService.keyrings.find((item) => {
+      return (
+        item.type === KEYRING_CLASS.MNEMONIC &&
+        item.mnemonic === mnemonic &&
+        item.checkPassphrase(passphrase)
+      );
     });
+
+    keyring?.setPassphrase(passphrase);
+
+    return keyring;
   };
 
   _getMnemonicKeyringByAddress = (address: string) => {
@@ -2086,11 +4205,7 @@ export class WalletController extends BaseController {
       return (
         item.type === KEYRING_CLASS.MNEMONIC &&
         item.mnemonic &&
-        Object.keys(item._index2wallet).some((key) => {
-          return (
-            item._index2wallet[key][0].toLowerCase() === address.toLowerCase()
-          );
-        })
+        item.accounts.includes(address)
       );
     });
   };
@@ -2133,25 +4248,82 @@ export class WalletController extends BaseController {
   getMnemonicByAddress = (address: string) => {
     const keyring = this._getMnemonicKeyringByAddress(address);
     if (!keyring) {
-      throw new Error("Can't find keyring by address");
+      throw new Error(t('background.error.notFoundKeyringByAddress'));
     }
     return keyring.mnemonic;
   };
 
-  getMnemonicAddressIndex = async (address: string) => {
-    const keyring = this._getMnemonicKeyringByAddress(address);
-    if (!keyring) {
-      throw new Error("Can't find keyring by address");
+  private getMnemonicKeyring = async (
+    type: 'address' | 'publickey',
+    value: string
+  ) => {
+    let keyring;
+    if (type === 'address') {
+      keyring = await this._getMnemonicKeyringByAddress(value);
+    } else {
+      keyring = await this.getMnemonicKeyRingFromPublicKey(value);
     }
-    return await keyring.getIndexByAddress(address);
+
+    if (!keyring) {
+      throw new Error(t('background.error.notFoundKeyringByAddress'));
+    }
+
+    return keyring;
   };
 
-  generateKeyringWithMnemonic = async (mnemonic: string) => {
-    if (!bip39.validateMnemonic(mnemonic)) {
-      throw new Error(i18n.t('The seed phrase is invalid, please check!'));
+  getMnemonicKeyringIfNeedPassphrase = async (
+    type: 'address' | 'publickey',
+    value: string
+  ) => {
+    const keyring = await this.getMnemonicKeyring(type, value);
+    return keyring.needPassphrase;
+  };
+
+  getMnemonicKeyringPassphrase = async (
+    type: 'address' | 'publickey',
+    value: string
+  ) => {
+    const keyring = await this.getMnemonicKeyring(type, value);
+    return keyring.passphrase;
+  };
+
+  checkPassphraseBelongToMnemonic = async (
+    type: 'address' | 'publickey',
+    value: string,
+    passphrase: string
+  ) => {
+    const keyring = await this.getMnemonicKeyring(type, value);
+    const result = keyring.checkPassphrase(passphrase);
+    if (result) {
+      keyring.setPassphrase(passphrase);
     }
-    // If import twice use same kerying
-    let keyring = this.getKeyringByMnemonic(mnemonic);
+    return result;
+  };
+
+  getMnemonicAddressInfo = async (address: string) => {
+    const keyring = this._getMnemonicKeyringByAddress(address);
+    if (!keyring) {
+      throw new Error(t('background.error.notFoundKeyringByAddress'));
+    }
+    return await keyring.getInfoByAddress(address);
+  };
+
+  validateMnemonic = (mnemonic: string) => {
+    return HdKeyring.validateMnemonic(mnemonic);
+  };
+
+  generateKeyringWithMnemonic = async (
+    mnemonic: string,
+    passphrase: string
+  ) => {
+    // keep passphrase is empty string if not set
+    passphrase = passphrase || '';
+
+    if (!HdKeyring.validateMnemonic(mnemonic)) {
+      throw new Error(t('background.error.invalidMnemonic'));
+    }
+    // If import twice use same keyring
+    let keyring = this.getKeyringByMnemonic(mnemonic, passphrase);
     const result = {
       keyringId: null as number | null,
       isExistedKR: false,
@@ -2161,7 +4333,7 @@ export class WalletController extends BaseController {
         KEYRING_CLASS.MNEMONIC
       );
 
-      keyring = new Keyring({ mnemonic });
+      keyring = new Keyring({ mnemonic, passphrase });
       keyringService.updateHdKeyringIndex(keyring);
       result.keyringId = this.addKeyringToStash(keyring);
       keyringService.addKeyring(keyring);
@@ -2173,6 +4345,14 @@ export class WalletController extends BaseController {
     return result;
   };
 
+  slip39GetThreshold = (secretShares: string[]) => {
+    return HdKeyring.slip39GetThreshold(secretShares);
+  };
+
+  slip39DecodeMnemonic = (secretShare: string) => {
+    return HdKeyring.slip39DecodeMnemonic(secretShare);
+  };
+
   addKeyringToStash = (keyring) => {
     const stashId = Object.values(stashKeyrings).length + 1;
     stashKeyrings[stashId] = keyring;
@@ -2182,7 +4362,10 @@ export class WalletController extends BaseController {
 
   updateKeyringInStash = (keyring) => {
     let keyringId = Object.keys(stashKeyrings).find((key) => {
-      return stashKeyrings[key].mnemonic === keyring.mnemonic;
+      return (
+        stashKeyrings[key].mnemonic === keyring.mnemonic &&
+        stashKeyrings[key].publicKey === keyring.publicKey
+      );
     }) as number | undefined;
 
     if (!keyringId) {
@@ -2192,9 +4375,12 @@ export class WalletController extends BaseController {
     return Number(keyringId);
   };
 
-  removeKeyringFromStash = (keyring) => {
+  removeMnemonicKeyringFromStash = (keyring) => {
     const keyringId = Object.keys(stashKeyrings).find((key) => {
-      return stashKeyrings[key].mnemonic === keyring.mnemonic;
+      return (
+        stashKeyrings[key]?.mnemonic &&
+        stashKeyrings[key].mnemonic === keyring.mnemonic
+      );
     });
     if (keyringId) {
       delete stashKeyrings[keyringId];
@@ -2204,7 +4390,7 @@ export class WalletController extends BaseController {
   removePublicKeyFromStash = (publicKey: string) => {
     const keyring = this.getMnemonicKeyRingFromPublicKey(publicKey);
     if (keyring) {
-      this.removeKeyringFromStash(keyring);
+      this.removeMnemonicKeyringFromStash(keyring);
     }
   };
 
@@ -2223,7 +4409,7 @@ export class WalletController extends BaseController {
       }
       this._setCurrentAccountFromKeyring(keyring, -1);
     } else {
-      throw new Error('failed to addKeyring, keyring is undefined');
+      throw new Error(t('background.error.addKeyring404'));
     }
   };
 
@@ -2247,6 +4433,24 @@ export class WalletController extends BaseController {
     const result = await keyringService.addNewAccount(keyring);
     this._setCurrentAccountFromKeyring(keyring, -1);
     return result;
+  };
+
+  deriveNextAccountFromMnemonicByPublicKey = async (publicKey: string) => {
+    const keyring = this.getMnemonicKeyRingFromPublicKey(publicKey);
+    if (!keyring) {
+      throw new Error(t('background.error.notFoundKeyringByAddress'));
+    }
+
+    const accounts = await keyringService.addNewAccount(keyring);
+    const nextAddress = accounts[accounts.length - 1];
+    this._setCurrentAccountFromKeyring(keyring, -1);
+    HDKeyRingLastAddAddrTimeService.addUnixRecord(publicKey);
+
+    return {
+      address: nextAddress,
+      alias: this.getAlianName(nextAddress) || '',
+      publicKey,
+    };
   };
 
   getAccountsCount = async () => {
@@ -2293,20 +4497,29 @@ export class WalletController extends BaseController {
     }
   };
 
-  isUseLedgerLive = () => {
-    const keyring = keyringService.getKeyringByType(
-      KEYRING_CLASS.HARDWARE.LEDGER
-    );
-    if (!keyring) return false;
-    return !keyring.isWebHID;
-  };
-
   authorizeLedgerHIDPermission = async () => {
     const keyring = keyringService.getKeyringByType(
       KEYRING_CLASS.HARDWARE.LEDGER
     );
     if (!keyring) return;
     await keyring.authorizeHIDPermission();
+    await keyringService.persistAllKeyrings();
+  };
+
+  authorizeImKeyHIDPermission = async () => {
+    const keyring = keyringService.getKeyringByType(
+      KEYRING_CLASS.HARDWARE.IMKEY
+    );
+    if (!keyring) return;
+    await keyring.authorizeHIDPermission();
+    await keyringService.persistAllKeyrings();
+  };
+
+  authorizeOneKeyHIDPermission = async () => {
+    const keyring = keyringService.getKeyringByType(
+      KEYRING_CLASS.HARDWARE.ONEKEY
+    );
+    if (!keyring) return;
     await keyringService.persistAllKeyrings();
   };
 
@@ -2317,9 +4530,6 @@ export class WalletController extends BaseController {
     if (!keyring) return false;
     return keyring.hasHIDPermission;
   };
-
-  updateUseLedgerLive = async (value: boolean) =>
-    preferenceService.updateUseLedgerLive(value);
 
   connectHardware = async ({
     type,
@@ -2339,7 +4549,13 @@ export class WalletController extends BaseController {
       keyring = this._getKeyringByType(type);
     } catch {
       const Keyring = keyringService.getKeyringClassForType(type);
-      keyring = new Keyring();
+      keyring = new Keyring(
+        (await hasBridge(type))
+          ? {
+              bridge: await getKeyringBridge(type),
+            }
+          : undefined
+      );
       isNew = true;
     }
 
@@ -2363,27 +4579,14 @@ export class WalletController extends BaseController {
     }
 
     if (needUnlock) {
-      await keyring.unlock();
-    }
-
-    if (keyring.useWebHID) {
-      keyring.useWebHID(isWebHID);
-    }
-
-    if (
-      type === KEYRING_CLASS.HARDWARE.LEDGER &&
-      !isWebHID &&
-      stashKeyringId !== null
-    ) {
-      keyring.updateTransportMethod &&
-        (await keyring.updateTransportMethod(true));
+      await keyring?.unlock?.();
     }
 
     return stashKeyringId;
   };
 
   acquireKeystoneMemStoreData = async () => {
-    const keyringType = KEYRING_CLASS.QRCODE;
+    const keyringType = KEYRING_CLASS.HARDWARE.KEYSTONE;
     const keyring: KeystoneKeyring = this._getKeyringByType(keyringType);
     if (keyring) {
       keyring.getInteraction().on(MemStoreDataReady, (request) => {
@@ -2404,7 +4607,7 @@ export class WalletController extends BaseController {
   ) => {
     let keyring;
     let stashKeyringId: number | null = null;
-    const keyringType = KEYRING_CLASS.QRCODE;
+    const keyringType = KEYRING_CLASS.HARDWARE.KEYSTONE;
     if (keyringId !== null && keyringId !== undefined) {
       keyring = stashKeyrings[keyringId];
     } else {
@@ -2414,7 +4617,9 @@ export class WalletController extends BaseController {
         const keystoneKeyring = keyringService.getKeyringClassForType(
           keyringType
         );
-        keyring = new keystoneKeyring();
+        keyring = new keystoneKeyring({
+          bridge: await getKeyringBridge(keyringType),
+        });
         stashKeyringId = Object.values(stashKeyrings).length + 1;
         stashKeyrings[stashKeyringId] = keyring;
       }
@@ -2431,7 +4636,7 @@ export class WalletController extends BaseController {
   ) => {
     let keyring;
     let stashKeyringId: number | null = null;
-    const keyringType = KEYRING_CLASS.QRCODE;
+    const keyringType = KEYRING_CLASS.HARDWARE.KEYSTONE;
     if (keyringId !== null && keyringId !== undefined) {
       keyring = stashKeyrings[keyringId];
     } else {
@@ -2441,7 +4646,9 @@ export class WalletController extends BaseController {
         const keystoneKeyring = keyringService.getKeyringClassForType(
           keyringType
         );
-        keyring = new keystoneKeyring();
+        keyring = new keystoneKeyring({
+          bridge: await getKeyringBridge(keyringType),
+        });
         stashKeyringId = Object.values(stashKeyrings).length + 1;
         stashKeyrings[stashKeyringId] = keyring;
       }
@@ -2459,7 +4666,7 @@ export class WalletController extends BaseController {
     const account = await preferenceService.getCurrentAccount();
     const keyring = await keyringService.getKeyringForAccount(
       address ? address : account!.address,
-      KEYRING_CLASS.QRCODE
+      KEYRING_CLASS.HARDWARE.KEYSTONE
     );
     return await keyring.submitSignature(requestId, cbor);
   };
@@ -2486,10 +4693,25 @@ export class WalletController extends BaseController {
     return res;
   };
 
-  signTypedData = async (
+  signPersonalMessageWithUI = async (
     type: string,
     from: string,
     data: string,
+    options?: any
+  ) => {
+    const fn = () =>
+      waitSignComponentAmounted().then(() => {
+        this.signPersonalMessage(type, from, data as any, options);
+      });
+
+    notificationService.setCurrentRequestDeferFn(fn);
+    return fn();
+  };
+
+  signTypedData = async (
+    type: string,
+    from: string,
+    data: Record<string, any>,
     options?: any
   ) => {
     const keyring = await keyringService.getKeyringForAccount(from, type);
@@ -2506,6 +4728,24 @@ export class WalletController extends BaseController {
       },
     });
     return res;
+  };
+
+  /**
+   * signTypedData when UI is mounted, and can retry if needed
+   */
+  signTypedDataWithUI = async (
+    type: string,
+    from: string,
+    data: string,
+    options?: any
+  ) => {
+    const fn = () =>
+      waitSignComponentAmounted().then(() => {
+        return this.signTypedData(type, from, data as any, options);
+      });
+
+    notificationService.setCurrentRequestDeferFn(fn);
+    return fn();
   };
 
   signTransaction = async (
@@ -2530,7 +4770,7 @@ export class WalletController extends BaseController {
     options?: any;
   }) => {
     if (data.startsWith('0x')) {
-      const stripped = ethUtil.stripHexPrefix(data);
+      const stripped = stripHexPrefix(data);
       const buff = Buffer.from(stripped, 'hex');
       data = JSON.parse(buff.toString('utf8'));
     } else {
@@ -2553,7 +4793,7 @@ export class WalletController extends BaseController {
     return keyring.getEncryptionPublicKey(address, options);
   };
 
-  requestKeyring = (
+  requestKeyring = async (
     type: string,
     methodName: string,
     keyringId: number | null,
@@ -2567,7 +4807,11 @@ export class WalletController extends BaseController {
         keyring = this._getKeyringByType(type);
       } catch {
         const Keyring = keyringService.getKeyringClassForType(type);
-        keyring = new Keyring();
+        keyring = new Keyring(
+          (await hasBridge(type))
+            ? { bridge: await getKeyringBridge(type) }
+            : undefined
+        );
       }
     }
     if (keyring[methodName]) {
@@ -2575,12 +4819,32 @@ export class WalletController extends BaseController {
     }
   };
 
+  getKeyringIndex = async (type: string, keyringId: number | null) => {
+    let keyring: any;
+    if (keyringId !== null && keyringId !== undefined) {
+      keyring = stashKeyrings[keyringId];
+    } else {
+      try {
+        keyring = this._getKeyringByType(type);
+      } catch {
+        const Keyring = keyringService.getKeyringClassForType(type);
+        keyring = new Keyring(
+          (await hasBridge(type))
+            ? { bridge: await getKeyringBridge(type) }
+            : undefined
+        );
+      }
+    }
+    return keyring?.index;
+  };
+
   requestHDKeyringByMnemonics = (
     mnemonics: string,
     methodName: string,
+    passphrase: string,
     ...params: any[]
   ) => {
-    const keyring = this.getKeyringByMnemonic(mnemonics);
+    const keyring = this.getKeyringByMnemonic(mnemonics, passphrase);
     if (!keyring) {
       throw new Error(
         'failed to requestHDKeyringByMnemonics, no keyring found.'
@@ -2593,11 +4857,12 @@ export class WalletController extends BaseController {
 
   activeAndPersistAccountsByMnemonics = async (
     mnemonics: string,
+    passphrase: string,
     accountsToImport: Required<
       Pick<Account, 'address' | 'alianName' | 'index'>
     >[]
   ) => {
-    const keyring = this.getKeyringByMnemonic(mnemonics);
+    const keyring = this.getKeyringByMnemonic(mnemonics, passphrase);
     if (!keyring) {
       throw new Error(
         '[activeAndPersistAccountsByMnemonics] no keyring found.'
@@ -2606,6 +4871,7 @@ export class WalletController extends BaseController {
     await this.requestHDKeyringByMnemonics(
       mnemonics,
       'activeAccounts',
+      passphrase,
       accountsToImport.map((acc) => acc.index! - 1)
     );
 
@@ -2669,6 +4935,34 @@ export class WalletController extends BaseController {
 
   // getTxExplainCacheByApprovalId = (id: string) =>
   //   transactionHistoryService.getExplainCacheByApprovalId(id);
+  getRecentPendingTxHistory: typeof transactionHistoryService.getRecentPendingTxHistory = (
+    address,
+    type
+  ) => transactionHistoryService.getRecentPendingTxHistory(address, type);
+  addCacheHistoryData: typeof transactionHistoryService.addCacheHistoryData = (
+    key,
+    data,
+    type
+  ) => transactionHistoryService.addCacheHistoryData(key, data, type);
+  getRecentTxHistory: typeof transactionHistoryService.getRecentTxHistory = (
+    address,
+    hash,
+    chainId,
+    type
+  ) =>
+    transactionHistoryService.getRecentTxHistory(address, hash, chainId, type);
+  completeBridgeTxHistory = (
+    from_tx_id: string,
+    chainId: number,
+    status: BridgeTxHistoryItem['status'],
+    bridgeTx?: BridgeHistory
+  ) =>
+    transactionHistoryService.completeBridgeTxHistory(
+      from_tx_id,
+      chainId,
+      status,
+      bridgeTx
+    );
 
   getTransactionHistory = (address: string) =>
     transactionHistoryService.getList(address);
@@ -2702,6 +4996,56 @@ export class WalletController extends BaseController {
   getPendingTxsByNonce = (address: string, chainId: number, nonce: number) =>
     transactionHistoryService.getPendingTxsByNonce(address, chainId, nonce);
 
+  getSkipedTxs = async (address: string) => {
+    const { pendings: pendingList } = transactionHistoryService.getList(
+      address
+    );
+    const dict = groupBy(pendingList, (item) => item.chainId);
+
+    const res: Record<string, { chainId: number; nonce: number }[]> = {};
+    for (const [chainId, list] of Object.entries(dict)) {
+      const chain = findChain({
+        id: +chainId,
+      });
+      if (!chain) {
+        continue;
+      }
+      const onChainNonce = await providerController.ethRpc(
+        {
+          data: {
+            method: 'eth_getTransactionCount',
+            params: [address, 'latest'],
+          },
+          session: INTERNAL_REQUEST_SESSION,
+        },
+        chain.serverId
+      );
+      const localNonce =
+        transactionHistoryService.getNonceByChain(address, +chainId) || 0;
+      for (let nonce = +onChainNonce; nonce < +localNonce; nonce++) {
+        if (
+          !list.find((txGroup) => {
+            return +txGroup.nonce === nonce;
+          })
+        ) {
+          if (res[chainId]) {
+            res[chainId].push({ nonce, chainId: +chainId });
+          } else {
+            res[chainId] = [{ nonce, chainId: +chainId }];
+          }
+        }
+      }
+    }
+
+    return res;
+  };
+
+  quickCancelTx = transactionHistoryService.quickCancelTx;
+
+  retryPushTx = transactionHistoryService.retryPushTx;
+
+  getTxGroup = transactionHistoryService.getTxGroup;
+
   getPreference = (key?: string) => {
     return preferenceService.getPreference(key);
   };
@@ -2710,7 +5054,6 @@ export class WalletController extends BaseController {
     preferenceService.setIsDefaultWallet(val);
     const hasOtherProvider = preferenceService.getHasOtherProvider();
     if (hasOtherProvider) {
-      // todo: check is code
       const sites = permissionService
         .getSites()
         .filter((item) => !item.preferMetamask);
@@ -2721,9 +5064,16 @@ export class WalletController extends BaseController {
           site.origin
         );
       });
-      setPopupIcon(val ? 'rabby' : 'metamask');
+    }
+    const isUnlocked = this.isUnlocked();
+    if (isUnlocked) {
+      if (hasOtherProvider) {
+        setPopupIcon(val ? 'rabby' : 'metamask');
+      } else {
+        setPopupIcon('default');
+      }
     } else {
-      setPopupIcon('default');
+      setPopupIcon('locked');
     }
   };
   isDefaultWallet = (origin?: string) =>
@@ -2752,14 +5102,14 @@ export class WalletController extends BaseController {
     }
   };
 
-  private async _setCurrentAccountFromKeyring(keyring, index = 0) {
+  private async _getAccountFromKeyring(keyring, index = 0) {
     const accounts = keyring.getAccountsWithBrand
       ? await keyring.getAccountsWithBrand()
       : await keyring.getAccounts();
     const account = accounts[index < 0 ? index + accounts.length : index];
 
     if (!account) {
-      throw new Error('the current account is empty');
+      throw new Error(t('background.error.emptyAccount'));
     }
 
     const _account = {
@@ -2767,6 +5117,12 @@ export class WalletController extends BaseController {
       type: keyring.type,
       brandName: typeof account === 'string' ? keyring.type : account.brandName,
     };
+
+    return _account;
+  }
+
+  private async _setCurrentAccountFromKeyring(keyring, index = 0) {
+    const _account = await this._getAccountFromKeyring(keyring, index);
     preferenceService.setCurrentAccount(_account);
 
     return [_account];
@@ -2794,11 +5150,22 @@ export class WalletController extends BaseController {
     return undefined;
   };
 
-  updateAlianName = (address: string, name: string) => {
+  updateAlianName = (address: string, name: string, cexId?: string) => {
     contactBookService.updateAlias({
       name,
       address,
+      cexId,
     });
+  };
+
+  getCexId = (address: string) => {
+    const contact = contactBookService.getContactByAddress(address);
+    if (contact?.cexId) return contact.cexId;
+    return undefined;
+  };
+
+  updateCexId = (address: string, cexId: string) => {
+    contactBookService.updateCexId(address, cexId);
   };
 
   getAllAlianNameByMap = () => {
@@ -2823,7 +5190,7 @@ export class WalletController extends BaseController {
     keyringType: string;
   }) => {
     if (addresses.length <= 0)
-      throw new Error('[GenerateCacheAliasNames]: need at least one address');
+      throw new Error(t('background.error.generateCacheAliasNames'));
     const firstAddress = addresses[0];
     const keyrings = await this.getTypedAccounts(keyringType);
     const keyring = await keyringService.getKeyringForAccount(
@@ -2940,6 +5307,9 @@ export class WalletController extends BaseController {
   getIsFirstOpen = () => {
     return preferenceService.getIsFirstOpen();
   };
+  getIsNewUser = () => {
+    return preferenceService.getIsNewUser();
+  };
   updateIsFirstOpen = () => {
     return preferenceService.updateIsFirstOpen();
   };
@@ -2992,62 +5362,229 @@ export class WalletController extends BaseController {
 
   updateNeedSwitchWalletCheck = preferenceService.updateNeedSwitchWalletCheck;
 
-  revoke = async ({
-    list,
-  }: {
-    list: import('@/utils/approval').ApprovalSpenderItemToBeRevoked[];
-  }) => {
+  revoke = async ({ list }: { list: ApprovalSpenderItemToBeRevoked[] }) => {
     const queue = new PQueue({
       autoStart: true,
       concurrency: 1,
       timeout: undefined,
     });
 
-    const revokeList = list.map((e) => async () => {
-      try {
-        if ('tokenId' in e) {
-          await this.revokeNFTApprove(e);
-        } else {
-          await this.approveToken(e.chainServerId, e.id, e.spender, 0, {
-            ga: {
-              category: 'Security',
-              source: 'tokenApproval',
-            },
-          });
+    const abortRevoke = new AbortController();
+
+    const revokeSummary = summarizeRevoke(list);
+
+    const revokeList: (() => Promise<void>)[] = [
+      ...Object.entries(revokeSummary.permit2Revokes).map(
+        ([permit2Key, item]) => async () => {
+          try {
+            const { chainServerId, permit2ContractId } = decodePermit2GroupKey(
+              permit2Key
+            );
+            if (!permit2ContractId) return;
+            if (chainServerId !== item.chainServerId) {
+              console.warn(`chainServerId ${chainServerId} not match`, item);
+              return;
+            }
+
+            await this.lockdownPermit2({
+              id: permit2ContractId,
+              chainServerId: item.chainServerId,
+              tokenSpenders: item.tokenSpenders,
+            });
+          } catch (error) {
+            abortRevoke.abort();
+            if (!appIsProd) console.error(error);
+            console.error('batch revoke permit2 error', item);
+          }
         }
-      } catch (error) {
+      ),
+      ...revokeSummary.generalRevokes.map((e) => async () => {
+        try {
+          if ('nftTokenId' in e) {
+            await this.revokeNFTApprove(e);
+          } else {
+            await this.approveToken(e.chainServerId, e.id, e.spender, 0, {
+              ga: {
+                category: 'Security',
+                source: 'tokenApproval',
+              },
+            });
+          }
+        } catch (error) {
+          abortRevoke.abort();
+          if (!appIsProd) console.error(error);
+          console.error('revoke error', e);
+        }
+      }),
+    ];
+
+    const waitAbort = new Promise<void>((resolve) => {
+      const onAbort = () => {
         queue.clear();
-        console.error('revoke error', e);
-      }
+        resolve();
+
+        abortRevoke.signal.removeEventListener('abort', onAbort);
+      };
+      abortRevoke.signal.addEventListener('abort', onAbort);
     });
 
     try {
-      await queue.addAll(revokeList);
+      await Promise.race([queue.addAll(revokeList), waitAbort]);
     } catch (error) {
       console.log('revoke error', error);
     }
   };
 
-  getRecommendNonce = async ({
-    from,
-    chainId,
-  }: {
-    from: string;
-    chainId: number;
-  }) => {
-    const chain = Object.values(CHAINS).find((item) => item.id === chainId);
-    if (!chain) {
-      throw new Error('chain not found');
-    }
-    const onChainNonce = await this.requestETHRpc(
-      {
-        method: 'eth_getTransactionCount',
-        params: [from, 'latest'],
-      },
-      chain.serverId
+  revokeEIP7702 = async ({ chainList }: { chainList: CHAINS_ENUM[] }) => {
+    const queue = new PQueue({
+      autoStart: true,
+      concurrency: 1,
+      timeout: undefined,
+    });
+
+    const abortRevoke = new AbortController();
+
+    const account = await preferenceService.getCurrentAccount();
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+
+    const revokeList: (() => Promise<void>)[] = chainList.map(
+      (chain) => async () => {
+        try {
+          const chainId = findChain({
+            enum: chain,
+          })?.id;
+          if (!chainId) throw new Error(t('background.error.invalidChainId'));
+
+          const _nonce = await this.getRecommendNonce({
+            from: account.address,
+            chainId,
+          });
+
+          const nonce = fromHex(_nonce as `0x${string}`, 'number') + 1;
+
+          const tx: any = {
+            from: account.address,
+            to: account.address,
+            chainId: chainId,
+            type: 4,
+            nonce: _nonce,
+          };
+          await this.sendRequest({
+            $ctx: {
+              eip7702Revoke: true,
+              eip7702RevokeAuthorization: [[chainId, zeroAddress, nonce]],
+            },
+            method: 'eth_sendTransaction',
+            params: [tx],
+          });
+        } catch (error) {
+          abortRevoke.abort();
+          if (!appIsProd) console.error(error);
+          console.error(`batch revoke ${chain} 7702 error`);
+        }
+      }
     );
-    const localNonce = (await this.getNonceByChain(from, chainId)) || 0;
-    return `0x${BigNumber.max(onChainNonce, localNonce).toString(16)}`;
+
+    const waitAbort = new Promise<void>((resolve) => {
+      const onAbort = () => {
+        queue.clear();
+        resolve();
+
+        abortRevoke.signal.removeEventListener('abort', onAbort);
+      };
+      abortRevoke.signal.addEventListener('abort', onAbort);
+    });
+
+    try {
+      await Promise.race([queue.addAll(revokeList), waitAbort]);
+    } catch (error) {
+      console.log('revoke error', error);
+    }
+  };
+
+  revokeEIP7702V2 = async ({ chainList }: { chainList: CHAINS_ENUM[] }) => {
+    const queue = new PQueue({
+      autoStart: true,
+      concurrency: 1,
+      timeout: undefined,
+    });
+
+    const abortRevoke = new AbortController();
+
+    const account = await preferenceService.getCurrentAccount();
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+
+    const paramsList = await Promise.all(
+      chainList.map(async (chain) => {
+        try {
+          const chainId = findChain({
+            enum: chain,
+          })?.id;
+          if (!chainId) throw new Error(t('background.error.invalidChainId'));
+
+          const _nonce = await this.getRecommendNonce({
+            from: account.address,
+            chainId,
+          });
+
+          const nonce = fromHex(_nonce as `0x${string}`, 'number') + 1;
+
+          const tx: any = {
+            from: account.address,
+            to: account.address,
+            chainId: chainId,
+            type: 4,
+            nonce: _nonce,
+          };
+          return {
+            chain,
+            data: {
+              $ctx: {
+                eip7702Revoke: true,
+                eip7702RevokeAuthorization: [[chainId, zeroAddress, nonce]],
+              },
+              method: 'eth_sendTransaction',
+              params: [tx],
+            },
+          };
+        } catch (error) {
+          console.error(error);
+          return null;
+        }
+      })
+    );
+
+    const revokeList: (() => Promise<void>)[] = paramsList.map(
+      (item) => async () => {
+        try {
+          if (!item) {
+            throw new Error(t('background.error.invalidRevokeParams'));
+          }
+
+          await this.sendRequest(item.data);
+        } catch (error) {
+          abortRevoke.abort();
+          if (!appIsProd) console.error(error);
+          console.error(`batch revoke ${item?.chain} 7702 error`);
+        }
+      }
+    );
+
+    const waitAbort = new Promise<void>((resolve) => {
+      const onAbort = () => {
+        queue.clear();
+        resolve();
+
+        abortRevoke.signal.removeEventListener('abort', onAbort);
+      };
+      abortRevoke.signal.addEventListener('abort', onAbort);
+    });
+
+    try {
+      await Promise.race([queue.addAll(revokeList), waitAbort]);
+    } catch (error) {
+      console.log('revoke error', error);
+    }
   };
 
   getSecurityEngineRules = () => {
@@ -3131,14 +5668,16 @@ export class WalletController extends BaseController {
   initQRHardware = async (brand: string) => {
     let keyring;
     let stashKeyringId: number | null = null;
-    const keyringType = KEYRING_CLASS.QRCODE;
+    const keyringType = KEYRING_CLASS.HARDWARE.KEYSTONE;
     try {
       keyring = this._getKeyringByType(keyringType);
     } catch {
       const keystoneKeyring = keyringService.getKeyringClassForType(
         keyringType
       );
-      keyring = new keystoneKeyring();
+      keyring = new keystoneKeyring({
+        bridge: await getKeyringBridge(keyringType),
+      });
       stashKeyringId = this.addKeyringToStash(keyring);
     }
 
@@ -3148,7 +5687,7 @@ export class WalletController extends BaseController {
 
   checkQRHardwareAllowImport = async (brand: string) => {
     try {
-      const keyring = this._getKeyringByType(KEYRING_CLASS.QRCODE);
+      const keyring = this._getKeyringByType(KEYRING_CLASS.HARDWARE.KEYSTONE);
 
       if (!keyring) {
         return {
@@ -3163,13 +5702,1350 @@ export class WalletController extends BaseController {
       };
     }
   };
+
+  coboSafeGetAccountAddress = async ({
+    chainServerId,
+    coboSafeAddress,
+  }: {
+    chainServerId: string;
+    coboSafeAddress: string;
+  }) => {
+    const provider = await getWeb3Provider({
+      chainServerId,
+      account: {
+        address: '0x0',
+        type: 'coboSafe',
+        brandName: 'cobo',
+      },
+    });
+    const coboSafe = new CoboSafeAccount(coboSafeAddress, provider);
+    return await coboSafe.getAddress();
+  };
+
+  coboSafeGetAllDelegates = async ({
+    chainServerId,
+    coboSafeAddress,
+  }: {
+    chainServerId: string;
+    coboSafeAddress: string;
+  }) => {
+    const provider = await getWeb3Provider({ chainServerId });
+    const coboSafe = new CoboSafeAccount(coboSafeAddress, provider);
+    return await coboSafe.getAllDelegates();
+  };
+
+  coboSafeBuildTransaction = async ({
+    tx,
+    chainServerId,
+    coboSafeAddress,
+    account,
+  }: {
+    tx: Tx;
+    chainServerId: string;
+    coboSafeAddress: string;
+    account;
+  }): Promise<Tx> => {
+    await preferenceService.saveCurrentCoboSafeAddress();
+    await preferenceService.setCurrentAccount(account);
+    const provider = await getWeb3Provider({ chainServerId, account });
+    const coboSafe = new CoboSafeAccount(coboSafeAddress, provider);
+    const res = await coboSafe.execRawTransaction(
+      tx,
+      account.address,
+      chainServerId
+    );
+    return res as any;
+  };
+
+  coboSafeResetCurrentAccount = async () => {
+    preferenceService.resetCurrentCoboSafeAddress();
+  };
+
+  coboSafeImport = async ({
+    address,
+    safeModuleAddress,
+    networkId,
+  }: {
+    address: string;
+    networkId: string;
+    safeModuleAddress: string;
+  }) => {
+    let keyring: CoboArgusKeyring, isNewKey;
+    const keyringType = KEYRING_CLASS.CoboArgus;
+    try {
+      keyring = this._getKeyringByType(keyringType);
+    } catch {
+      const CoboArgusKeyring = keyringService.getKeyringClassForType(
+        keyringType
+      );
+      keyring = new CoboArgusKeyring({});
+      isNewKey = true;
+    }
+
+    keyring.setAccountToAdd(address);
+    keyring.setAccountDetail(address, {
+      address,
+      safeModules: [
+        {
+          networkId,
+          address: safeModuleAddress,
+        },
+      ],
+    });
+    await keyringService.addNewAccount(keyring);
+    if (isNewKey) {
+      await keyringService.addKeyring(keyring);
+    }
+
+    return this._setCurrentAccountFromKeyring(keyring, -1);
+  };
+
+  coboSafeGetAccountDetail = async (address: string) => {
+    const keyring = this._getKeyringByType(
+      KEYRING_CLASS.CoboArgus
+    ) as CoboArgusKeyring;
+    if (!keyring) {
+      return;
+    }
+    const detail = await keyring.getAccountDetail(address);
+    const networkId = detail.safeModules[0].networkId;
+    const safeModuleAddress = detail.safeModules[0].address;
+
+    const provider = await getWeb3Provider({
+      chainServerId: networkId,
+    });
+    const cobo = new CoboSafeAccount(address, provider);
+    const isModuleEnabled = await cobo.checkIsModuleEnabled({
+      safeAddress: address,
+      coboSafeAddress: safeModuleAddress,
+    });
+
+    return {
+      safeModuleAddress,
+      networkId,
+      address: detail.address,
+      isModuleEnabled,
+    };
+  };
+
+  updateNotificationWinProps = notificationService.updateNotificationWinProps;
+
+  checkNeedDisplayBlockedRequestApproval =
+    notificationService.checkNeedDisplayBlockedRequestApproval;
+
+  checkNeedDisplayCancelAllApproval =
+    notificationService.checkNeedDisplayCancelAllApproval;
+
+  blockedDapp = () => {
+    notificationService.blockedDapp();
+    this.rejectAllApprovals();
+  };
+
+  walletConnectScanAccount = async () => {
+    let keyring: WalletConnectKeyring, isNewKey;
+    const keyringType = KEYRING_CLASS.WALLETCONNECT;
+    try {
+      keyring = this._getKeyringByType(keyringType);
+    } catch {
+      const WalletConnect = keyringService.getKeyringClassForType(keyringType);
+      keyring = new WalletConnect(GET_WALLETCONNECT_CONFIG());
+      isNewKey = true;
+    }
+
+    if (isNewKey) {
+      this.addKeyringToStash(keyring);
+    }
+
+    keyring.on('scanAccount', (payload) => {
+      eventBus.emit(EVENTS.broadcastToUI, {
+        method: EVENTS.WALLETCONNECT.SCAN_ACCOUNT,
+        params: payload,
+      });
+    });
+
+    return await keyring.scanAccount();
+  };
+
+  setStatsData = (data: any) => {
+    notificationService.setStatsData(data);
+  };
+
+  getStatsData = () => {
+    return notificationService.getStatsData();
+  };
+
+  _currentCoinbaseStashId?: undefined | null | number;
+
+  connectCoinbase = async () => {
+    let keyring: CoinbaseKeyring, isNewKey;
+    const keyringType = KEYRING_CLASS.Coinbase;
+    const curStashId = this._currentCoinbaseStashId;
+    try {
+      if (curStashId !== null && curStashId !== undefined) {
+        keyring = stashKeyrings[curStashId];
+        isNewKey = false;
+      } else {
+        keyring = this._getKeyringByType(keyringType);
+      }
+    } catch {
+      const CoinbaseKeyring = keyringService.getKeyringClassForType(
+        keyringType
+      );
+      keyring = new CoinbaseKeyring();
+      isNewKey = true;
+    }
+
+    let stashId = curStashId;
+    if (isNewKey) {
+      stashId = this.addKeyringToStash(keyring);
+
+      eventBus.addEventListener(
+        EVENTS.WALLETCONNECT.INIT,
+        ({ address, type }) => {
+          if (type !== KEYRING_CLASS.Coinbase) {
+            return;
+          }
+          const uri = keyring.connect({
+            address,
+          });
+
+          eventBus.emit(EVENTS.broadcastToUI, {
+            method: EVENTS.WALLETCONNECT.INITED,
+            params: { uri },
+          });
+        }
+      );
+
+      keyring.on('message', (data) => {
+        if (data.status === 'CHAIN_CHANGED') {
+          eventBus.emit(EVENTS.broadcastToUI, {
+            method: EVENTS.WALLETCONNECT.SESSION_ACCOUNT_CHANGED,
+            params: {
+              ...data,
+              status: 'CONNECTED',
+            },
+          });
+        } else {
+          eventBus.emit(EVENTS.broadcastToUI, {
+            method: EVENTS.WALLETCONNECT.SESSION_STATUS_CHANGED,
+            params: data,
+          });
+          eventBus.emit(EVENTS.broadcastToUI, {
+            method: EVENTS.WALLETCONNECT.SESSION_ACCOUNT_CHANGED,
+            params: data,
+          });
+        }
+      });
+    }
+
+    const uri = await keyring.connect();
+
+    this._currentCoinbaseStashId = stashId;
+    return { uri };
+  };
+
+  importCoinbase = async (address: string) => {
+    let keyring: CoinbaseKeyring, isNewKey;
+    const keyringType = KEYRING_CLASS.Coinbase;
+    const stashId = this._currentCoinbaseStashId;
+    try {
+      keyring = this._getKeyringByType(keyringType);
+    } catch {
+      if (stashId !== null && stashId !== undefined) {
+        keyring = stashKeyrings[stashId];
+      } else {
+        const coinbaseKeyring = keyringService.getKeyringClassForType(
+          keyringType
+        );
+        keyring = new coinbaseKeyring();
+      }
+      isNewKey = true;
+    }
+
+    keyring.setAccountToAdd(address);
+
+    if (isNewKey) {
+      await keyringService.addKeyring(keyring);
+    }
+
+    await keyringService.addNewAccount(keyring);
+    return this._setCurrentAccountFromKeyring(keyring, -1);
+  };
+
+  /**
+   * disable some functions when Rabby server is busy
+   * disable approval management and transaction history when level is 1
+   * disable total balance refresh and level 1 content when level is 2
+   */
+  getAPIConfig = cached(
+    'getAPIConfig',
+    async () => {
+      interface IConfig {
+        data: {
+          level: number;
+          authorized: {
+            enable: boolean;
+          };
+          balance: {
+            enable: boolean;
+          };
+          history: {
+            enable: boolean;
+          };
+        };
+      }
+      try {
+        const config = await fetch(
+          'https://static.debank.com/rabby/config.json'
+        );
+        const { data } = (await config.json()) as IConfig;
+        return data.level;
+      } catch (e) {
+        return 0;
+      }
+    },
+    { timeout: 10000, maxSize: 0 }
+  ).fn;
+
+  rabbyPointVerifyAddress = async (params?: {
+    code?: string;
+    claimSnapshot?: boolean;
+    claimNumber?: number;
+    // text: string;
+  }) => {
+    const { code, claimSnapshot } = params || {};
+    const account = await preferenceService.getCurrentAccount();
+    if (!account) throw new Error(t('background.error.noCurrentAccount'));
+    let claimText = '';
+    let verifyText = '';
+
+    if (claimSnapshot) {
+      claimText = (
+        await wallet.openapi.getRabbyClaimTextV2({
+          id: account?.address,
+          invite_code: code,
+        })
+      )?.text; //`${account?.address} Claims Rabby Points`;
+    } else {
+      verifyText = (
+        await wallet.openapi.getRabbySignatureTextV2({
+          id: account?.address,
+        })
+      )?.text; //`Rabby Wallet wants you to sign in with your address:\n${account?.address}`;
+    }
+
+    const msg = `0x${Buffer.from(
+      claimSnapshot ? claimText : verifyText,
+      'utf-8'
+    ).toString('hex')}`;
+
+    const signature = await this.sendRequest<string>({
+      method: 'personal_sign',
+      params: [msg, account.address],
+    });
+
+    this.setRabbyPointsSignature(account.address, signature);
+    if (claimSnapshot) {
+      try {
+        await wallet.openapi.claimRabbyPointsSnapshotV2({
+          id: account?.address,
+          invite_code: code,
+          signature,
+        });
+      } catch (error) {
+        console.error(error);
+      }
+    } else {
+      this.setPageStateCache({
+        path: '/rabby-points',
+        params: {},
+        states: {},
+      });
+    }
+    return signature;
+  };
+
+  private async executeGasAccountLogin(
+    account: Account,
+    options?: {
+      closeWindowBeforeSign?: boolean;
+    }
+  ): Promise<{
+    signature: string;
+    success: boolean;
+    result?: any;
+  }> {
+    const { closeWindowBeforeSign = true } = options || {};
+    const { text } = await wallet.openapi.getGasAccountSignText(
+      account.address
+    );
+    if (closeWindowBeforeSign) {
+      eventBus.emit(EVENTS.broadcastToUI, {
+        method: EVENTS.GAS_ACCOUNT.CLOSE_WINDOW,
+      });
+    }
+    const signature = await this.sendRequest<string>(
+      {
+        method: 'personal_sign',
+        params: [text, account.address],
+      },
+      {
+        account,
+      }
+    );
+
+    if (!signature) {
+      return { signature: '', success: false };
+    }
+
+    const result = await pRetry(
+      async () =>
+        wallet.openapi.loginGasAccount({
+          sig: signature,
+          account_id: account.address,
+        }),
+      {
+        retries: 2,
+      }
+    );
+    return { signature, success: result?.success || false, result };
+  }
+
+  private ensureGasAccountSession = async (
+    account: Account,
+    options?: {
+      closeWindowBeforeSign?: boolean;
+    }
+  ) => {
+    const currentSession = this.getGasAccountSig();
+
+    if (currentSession?.sig && currentSession?.accountId) {
+      return {
+        sig: currentSession.sig,
+        accountId: currentSession.accountId,
+      };
+    }
+
+    const { signature, success } = await this.executeGasAccountLogin(
+      account,
+      options
+    );
+    if (!success || !signature) {
+      throw new Error('GasAccount login failed');
+    }
+
+    await this.handleGasAccountLoginSuccess(signature, account);
+
+    const nextSession = this.getGasAccountSig();
+    if (!nextSession?.sig || !nextSession?.accountId) {
+      throw new Error('GasAccount login failed');
+    }
+
+    return {
+      sig: nextSession.sig,
+      accountId: nextSession.accountId,
+    };
+  };
+
+  private reportGasAccountDirectDeposit = async ({
+    account,
+    chainServerId,
+    amount,
+    txHash,
+    gasAccountSession,
+  }: {
+    account: Account;
+    chainServerId: string;
+    amount: number;
+    txHash: string;
+    gasAccountSession: {
+      sig: string;
+      accountId: string;
+    };
+  }) => {
+    const chain = findChainByServerID(chainServerId);
+    if (!chain) {
+      throw new Error('Invalid chain');
+    }
+
+    const usedNonce = await this.getNonceByChain(account.address, chain.id);
+    if (usedNonce === null || usedNonce === undefined || usedNonce <= 0) {
+      throw new Error('GasAccount top up nonce missing');
+    }
+
+    await openapiService.rechargeGasAccount({
+      sig: gasAccountSession.sig,
+      account_id: gasAccountSession.accountId,
+      tx_id: txHash,
+      chain_id: chainServerId,
+      amount,
+      user_addr: account.address,
+      nonce: usedNonce - 1,
+    });
+  };
+
+  signGasAccount = async (account: Account, isClaimGift: boolean = false) => {
+    const { signature, success } = await this.executeGasAccountLogin(account);
+    if (!success || !signature) {
+      return '';
+    }
+
+    await this.handleGasAccountLoginSuccess(signature, account);
+    if (isClaimGift) {
+      await this.claimGasAccountGift(account.address);
+    }
+    this.markGiftAsClaimed();
+    return signature;
+  };
+
+  submitGasAccountDepositTxs = async ({
+    account,
+    txs,
+    amount,
+    chainServerId,
+    depositType,
+    tokenId,
+    tokenAmount,
+    scene = 'recharge',
+  }: {
+    account: Account;
+    txs: Tx[];
+    amount: number;
+    chainServerId: string;
+    depositType: 'direct' | 'bridge';
+    tokenId?: string;
+    tokenAmount?: number;
+    scene?: 'in_tx_flow' | 'recharge';
+  }) => {
+    const gasAccountSession = await this.ensureGasAccountSession(account, {
+      closeWindowBeforeSign: false,
+    });
+
+    if (depositType === 'direct') {
+      if (txs.length !== 1) {
+        throw new Error('GasAccount direct deposit expects a single tx');
+      }
+    }
+
+    const hashes: string[] = [];
+
+    for (const tx of txs) {
+      const hash = await this.sendRequest<string>(
+        {
+          method: 'eth_sendTransaction',
+          params: [tx],
+          $ctx: {
+            ga: {
+              category: 'GasAccount',
+              action: 'deposit',
+            },
+          },
+        },
+        {
+          account,
+        }
+      );
+      hashes.push(hash);
+    }
+
+    if (depositType === 'bridge') {
+      const bridgeHash = hashes[hashes.length - 1];
+      if (!bridgeHash) {
+        throw new Error('GasAccount bridge tx missing');
+      }
+      if (!tokenId) {
+        throw new Error('GasAccount bridge token missing');
+      }
+      if (typeof tokenAmount !== 'number' || Number.isNaN(tokenAmount)) {
+        throw new Error('GasAccount bridge token amount missing');
+      }
+
+      await openapiService.createGasAccountBridgeRecharge({
+        sig: gasAccountSession.sig,
+        gas_account_id: gasAccountSession.accountId,
+        user_addr: account.address,
+        from_chain_id: chainServerId,
+        from_token_id: tokenId,
+        from_token_amount: tokenAmount,
+        from_usd_value: amount,
+        tx_id: bridgeHash,
+        scene,
+      });
+    }
+
+    if (depositType === 'direct') {
+      const directHash = hashes[0];
+      if (!directHash) {
+        throw new Error('GasAccount direct tx missing');
+      }
+
+      await this.reportGasAccountDirectDeposit({
+        account,
+        chainServerId,
+        amount,
+        txHash: directHash,
+        gasAccountSession,
+      });
+    }
+
+    return hashes;
+  };
+
+  addCustomTestnet = async (
+    chain: Parameters<typeof customTestnetService.add>[0],
+    ctx?: {
+      ga?: {
+        source?: string;
+      };
+    }
+  ) => {
+    const source = ctx?.ga?.source || 'setting';
+
+    const res = await customTestnetService.add(chain);
+    if (!('error' in res)) {
+      matomoRequestEvent({
+        category: 'Custom Network',
+        action: 'Success Add Network',
+        label: `${source}_${String(chain.id)}`,
+      });
+
+      ga4.fireEvent('Add_CustomNetwork', {
+        event_category: 'Custom Network',
+      });
+    }
+    return res;
+  };
+  updateCustomTestnet = customTestnetService.update;
+  removeCustomTestnet = (chainId: number) => {
+    const chain = findChain({
+      id: chainId,
+    });
+    if (chain?.enum) {
+      RPCService.removeCustomRPC(chain.enum);
+    }
+    customTestnetService.remove(chainId);
+  };
+  getCustomTestnetList = customTestnetService.getList;
+
+  getCustomTestnetNonce = async ({
+    address,
+    chainId,
+  }: {
+    address: string;
+    chainId: number;
+  }) => {
+    const count = await customTestnetService.getTransactionCount({
+      address,
+      chainId,
+      blockTag: 'latest',
+    });
+    const localNonce = (await wallet.getNonceByChain(address, chainId)) || 0;
+    return BigNumber.max(count, localNonce).toNumber();
+  };
+
+  estimateCustomTestnetGas = customTestnetService.estimateGas;
+
+  getCustomTestnetGasPrice = customTestnetService.getGasPrice;
+
+  getCustomBlockGasLimit = customTestnetService.getBlockGasLimit;
+
+  getCustomTestnetGasMarket = customTestnetService.getGasMarket;
+
+  getCustomTestnetToken = customTestnetService.getToken;
+  removeCustomTestnetToken = customTestnetService.removeToken;
+  addCustomTestnetToken = customTestnetService.addToken;
+  getCustomTestnetTokenList = customTestnetService.getTokenList;
+  hasCustomTestnetTokens = customTestnetService.hasCustomTokens;
+  isAddedCustomTestnetToken = customTestnetService.hasToken;
+  getCustomTestnetTx = customTestnetService.getTx;
+  getCustomTestnetTxReceipt = customTestnetService.getTransactionReceipt;
+  getCustomTestnetLogos = customTestnetService.fetchLogos;
+  // getCustomTestnetTokenListWithBalance = customTestnetService.getTokenListWithBalance;
+
+  getUsedCustomTestnetChainList = async () => {
+    const ids = new Set<number>();
+    Object.values(transactionHistoryService.store.transactions).forEach(
+      (item) => {
+        Object.values(item).forEach((txGroup) => {
+          ids.add(txGroup.chainId);
+        });
+      }
+    );
+    const chainList = Array.from(ids).filter(
+      (id) =>
+        !findChain({
+          id,
+        })
+    );
+    const res = await openapiService.getChainListByIds({
+      ids: chainList.join(','),
+    });
+    return res;
+  };
+
+  parseCustomNetworkTx = customTestnetService.parseTx;
+
+  hasPrivateKeyInWallet = async (address: string) => {
+    let pk: any = null;
+    try {
+      pk = await keyringService.getKeyringForAccount(
+        address,
+        KEYRING_TYPE.SimpleKeyring
+      );
+    } catch (e) {
+      // just ignore the error
+    }
+    let mnemonic: any = null;
+    try {
+      mnemonic = await keyringService.getKeyringForAccount(
+        address,
+        KEYRING_TYPE.HdKeyring
+      );
+    } catch (e) {
+      // just ignore the error
+    }
+    if (!pk && !mnemonic) return false;
+    return pk?.type || mnemonic?.type;
+  };
+
+  syncMainnetChainList = syncChainService.syncMainnetChainList;
+
+  tryUnlock = async () => {
+    await keyringService.tryUnlock();
+    this.syncPopupIcon();
+  };
+
+  syncPopupIcon = () => {
+    if (!this.isBooted()) {
+      setPopupIcon('default');
+    } else if (this.isUnlocked()) {
+      const hasOtherProvider = preferenceService.getHasOtherProvider();
+      const isDefaultWallet = preferenceService.getIsDefaultWallet();
+      if (!hasOtherProvider) {
+        setPopupIcon('default');
+      } else {
+        setPopupIcon(isDefaultWallet ? 'rabby' : 'metamask');
+      }
+    } else {
+      setPopupIcon('locked');
+    }
+  };
+  setIsHideEcologyNoticeDict = preferenceService.setIsHideEcologyNoticeDict;
+
+  getRecommendGas = getRecommendGas;
+  getRecommendNonce = getRecommendNonce;
+  ethSendTransaction = async (
+    ...args: Parameters<typeof providerController.ethSendTransaction>
+  ) => {
+    try {
+      const res = await providerController.ethSendTransaction(...args);
+      return res;
+    } catch (e) {
+      const signingTxId = args?.[0]?.approvalRes?.signingTxId;
+      if (signingTxId != null) {
+        this.removeSigningTx(signingTxId);
+      }
+
+      throw e;
+    }
+  };
+  ethPersonalSign = async (
+    ...args: Parameters<typeof providerController.personalSign>
+  ) => {
+    return providerController.personalSign(...args);
+  };
+
+  ethSignTypedDataV4 = async (
+    ...args: Parameters<typeof providerController.ethSignTypedDataV4>
+  ) => {
+    return providerController.ethSignTypedDataV4(...args);
+  };
+
+  tryOpenOrActiveUserGuide = async () => {
+    if (this.isBooted()) {
+      return false;
+    }
+    await userGuideService.activeUserGuide();
+    return true;
+  };
+
+  uninstalledSyncStatus = uninstalledService.syncStatus;
+
+  gasMarketV2 = async (
+    params:
+      | {
+          chain: Chain;
+          tx: Tx;
+          customGas?: number;
+        }
+      | {
+          chainId: string;
+          customGas?: number;
+        }
+  ) => {
+    let chainId: string;
+    let tx: Tx | undefined;
+
+    if ('tx' in params) {
+      chainId = params.chain.serverId;
+
+      if (params?.chain && params?.chain.enum === CHAINS_ENUM.LINEA) {
+        if (params.tx.nonce === undefined) {
+          params.tx.nonce = await this.getRecommendNonce({
+            from: params.tx.from,
+            chainId: params.chain.id,
+          });
+        }
+
+        if (params.tx.gasPrice === undefined || params.tx.gasPrice === '') {
+          params.tx.gasPrice = '0x0';
+        }
+        if (params.tx.gas === undefined || params.tx.gas === '') {
+          params.tx.gas = '0x0';
+        }
+        if (params.tx.data === undefined || params.tx.data === '') {
+          params.tx.data = '0x';
+        }
+        tx = {
+          chainId: params.tx.chainId,
+          data: params.tx.data,
+          from: params.tx.from,
+          gas: params.tx.gas,
+          nonce: params.tx.nonce,
+          to: params.tx.to,
+          value: params.tx.value,
+          gasPrice: params.tx.gasPrice,
+        };
+      }
+    } else {
+      chainId = params.chainId;
+    }
+
+    return openapiService.gasMarketV2({
+      customGas: params.customGas,
+      chainId,
+      tx,
+    });
+  };
+
+  changeDappProvider = ({
+    origin,
+    name,
+    icon,
+    rdns,
+  }: {
+    origin: string;
+    name: string;
+    icon: string;
+    rdns: string;
+  }) => {
+    const site = permissionService.getSite(origin);
+    if (site) {
+      permissionService.setSite({
+        ...site,
+        rdns,
+        isConnected: false,
+      });
+    } else {
+      permissionService.setSite({
+        origin,
+        name,
+        icon,
+        chain: CHAINS_ENUM.ETH,
+        isSigned: false,
+        isConnected: false,
+        isTop: false,
+        rdns,
+      });
+    }
+    sessionService.broadcastEvent(
+      'rabby:providerChanged',
+      {
+        rdns,
+      },
+      origin,
+      true
+    );
+  };
+  savedUnencryptedKeyringData = async () =>
+    keyringService.savedUnencryptedKeyringData();
+
+  hasEncryptedKeyringData = async () =>
+    keyringService.hasEncryptedKeyringData();
+
+  hasUnencryptedKeyringData = async () =>
+    keyringService.hasUnencryptedKeyringData();
+
+  resetPassword = async (password: string) =>
+    keyringService.resetPassword(password);
+
+  resetBooted = async () => keyringService.resetBooted();
+
+  getUnencryptedKeyringTypes = async () =>
+    keyringService.getUnencryptedKeyringTypes();
+
+  getSyncDataString = async (filteredAccounts: Account[]) => {
+    const { vault, accounts } = await keyringService.getSyncVault(
+      filteredAccounts
+    );
+    const whitelist = await this.getWhitelist();
+    const highligtedAddresses = await this.getHighlightedAddresses();
+    const alianNames = await this.getAllAlianName();
+
+    const filteredWhitelist = whitelist.filter((item) => {
+      return accounts.some((account) => isSameAddress(account, item));
+    });
+    const filteredHighligtedAddresses = highligtedAddresses.filter((item) => {
+      return accounts.some((account) => isSameAddress(account, item.address));
+    });
+    const filteredAlianNames = alianNames.filter((item) => {
+      return accounts.some(
+        (account) => item.address && isSameAddress(account, item.address)
+      );
+    });
+
+    return JSON.stringify({
+      vault: JSON.parse(vault),
+      whitelist: filteredWhitelist,
+      highligtedAddresses: filteredHighligtedAddresses,
+      alianNames: filteredAlianNames,
+    });
+  };
+
+  setRateGuideLastExposure: typeof preferenceService.setRateGuideLastExposure = async (
+    ...args
+  ) => {
+    return preferenceService.setRateGuideLastExposure(...args);
+  };
+
+  /**
+   * 领取gift奖励
+   * @param address 地址
+   * @returns 是否成功领取
+   */
+  claimGasAccountGift = async (address: string): Promise<boolean> => {
+    try {
+      // 获取gas account的签名信息
+      const { sig, accountId } = this.getGasAccountSig();
+      if (!sig || !accountId) {
+        console.error('Gas account not logged in, cannot claim gift');
+        return false;
+      }
+
+      // 调用API领取gift
+      const result = await this.openapi.claimGasAccountGift({
+        sig,
+        id: accountId,
+      });
+      if (result.success) {
+        // 标记为已领取
+        this.markGiftAsClaimed();
+        this.setHasAnyAccountClaimedGift(true);
+        return true;
+      } else {
+        console.error('API returned success: false for gift claim');
+        return false;
+      }
+    } catch (error) {
+      console.error('Failed to claim gas account gift:', error);
+      return false;
+    }
+  };
+
+  /**
+   * 标记地址已领取gift（内部使用）
+   */
+  markGiftAsClaimed = () => {
+    gasAccountService.markGiftAsClaimed();
+  };
+
+  /**
+   * 获取全局标记：是否有任何账号已经领取过gift
+   * @returns 是否有任何账号已经领取过gift
+   */
+  getHasAnyAccountClaimedGift = () => {
+    return gasAccountService.getHasAnyAccountClaimedGift();
+  };
+
+  /**
+   * 设置全局标记：是否有任何账号已经领取过gift
+   * @param hasClaimed 是否有任何账号已经领取过gift
+   */
+  setHasAnyAccountClaimedGift = (hasClaimed: boolean) => {
+    gasAccountService.setHasAnyAccountClaimedGift(hasClaimed);
+  };
+
+  createPerpsAgentWallet = async (masterWallet: string) => {
+    return perpsService.createAgentWallet(masterWallet);
+  };
+  setPerpsCurrentAccount = perpsService.setCurrentAccount;
+  switchDesktopPerpsAccount = (account: Account) => {
+    eventBus.emit(EVENTS.broadcastToUI, {
+      method: EVENTS.DESKTOP.SWITCH_PERPS_ACCOUNT,
+      params: account,
+    });
+  };
+  getPerpsCurrentAccount = perpsService.getCurrentAccount;
+  getPerpsLastUsedAccount = perpsService.getLastUsedAccount;
+  getAgentWalletPreference = async (masterWallet: string) => {
+    return perpsService.getAgentWalletPreference(masterWallet);
+  };
+  getPerpsFavoritedCoins = perpsService.getPerpsFavoritedCoins;
+  setPerpsFavoritedCoins = perpsService.setPerpsFavoritedCoins;
+  setPerpsSelectedCoin = perpsService.setSelectedCoin;
+  getPerpsSelectedCoin = perpsService.getSelectedCoin;
+  getMarketSlippage = perpsService.getMarketSlippage;
+  setMarketSlippage = perpsService.setMarketSlippage;
+  getSoundEnabled = perpsService.getSoundEnabled;
+  setSoundEnabled = perpsService.setSoundEnabled;
+  getSkipMarketCloseConfirm = perpsService.getSkipMarketCloseConfirm;
+  setSkipMarketCloseConfirm = perpsService.setSkipMarketCloseConfirm;
+  getPerpsIsNeedSetDarkTheme = perpsService.getIsNeedSetDarkTheme;
+  updatePerpsAgentWalletPreference = perpsService.updateAgentWalletPreference;
+  setSendApproveAfterDeposit = perpsService.setSendApproveAfterDeposit;
+  getSendApproveAfterDeposit = async (masterAddress: string) => {
+    return perpsService.getSendApproveAfterDeposit(masterAddress);
+  };
+  getPerpsQuoteUnit = perpsService.getQuoteUnit;
+  setPerpsQuoteUnit = perpsService.setQuoteUnit;
+  setHasDoneNewUserProcess = perpsService.setHasDoneNewUserProcess;
+  getHasDoneNewUserProcess = perpsService.getHasDoneNewUserProcess;
+  setHasDismissedNewUserGuideV2 = perpsService.setHasDismissedNewUserGuideV2;
+  getHasDismissedNewUserGuideV2 = perpsService.getHasDismissedNewUserGuideV2;
+  getPerpsAgentWallet = async (masterWallet: string) => {
+    return perpsService.getAgentWallet(masterWallet);
+  };
+  getOrCreatePerpsAgentWallet = async (masterWallet: string) => {
+    const res = await perpsService.getAgentWallet(masterWallet);
+    if (!res) {
+      const resp = await this.createPerpsAgentWallet(masterWallet);
+      return {
+        vault: resp.vault,
+        agentAddress: resp.agentAddress,
+      };
+    } else {
+      return {
+        vault: res.vault,
+        agentAddress: res.preference.agentAddress,
+      };
+    }
+  };
+  getPerpsInviteConfig = perpsService.getInviteConfig;
+  setPerpsInviteConfig = perpsService.setInviteConfig;
+
+  signPerpsSendSetReferrer = async ({
+    address,
+    typedData,
+    nonce,
+    action,
+  }: {
+    address: string;
+    typedData: Record<string, any>;
+    action: Record<string, any>;
+    nonce: number;
+  }) => {
+    const signature = await wallet.sendRequest<string>({
+      method: 'eth_signTypedData_v4',
+      params: [address, JSON.stringify(typedData)],
+    });
+    if (!signature) {
+      throw new Error('User rejected signing');
+    }
+    const sdk = getPerpsSDK();
+    sdk.initAccount(address);
+    return sdk.exchange?.sendSetReferrer({
+      action: action,
+      nonce: nonce,
+      signature: signature,
+    });
+  };
+
+  signTextCreateHistory = (
+    params: Parameters<typeof signTextHistoryService.createHistory>[0]
+  ) => {
+    signTextHistoryService.createHistory(params);
+  };
+
+  emitEvent = (method: string, params?: any) => {
+    eventBus.emit(EVENTS.broadcastToUI, {
+      method: method,
+      params,
+    });
+  };
+
+  setReportGasLevel = miscService.setCurrentGasLevel;
+  getReportGasLevel = miscService.getCurrentGasLevel;
+  checkIsApprovedForAll = async ({
+    owner,
+    operator,
+    contractAddress,
+    chainId,
+  }: {
+    owner: string;
+    operator: string;
+    contractAddress: string;
+    chainId: number;
+  }) => {
+    const chain = findChain({ id: chainId });
+    if (!chain) {
+      throw new Error('wrong chain');
+    }
+    const encodedData = encodeFunctionData({
+      abi: ERC721ABI,
+      functionName: 'isApprovedForAll',
+      args: [owner as `0x${string}`, operator as `0x${string}`],
+    });
+    const res = await this.requestETHRpc(
+      {
+        method: 'eth_call',
+        params: [
+          {
+            data: encodedData,
+            to: contractAddress,
+          },
+          'latest',
+        ],
+      },
+      chain.serverId
+    );
+
+    const value = decodeFunctionResult({
+      abi: ERC721ABI,
+      functionName: 'isApprovedForAll',
+      data: res,
+    });
+
+    return value;
+  };
+
+  buildSetApprovedForAllTx = async ({
+    from,
+    chainId,
+    operator,
+    contractAddress,
+  }: {
+    from: string;
+    chainId: number;
+    operator: string;
+    contractAddress: string;
+  }) => {
+    const encodedData = encodeFunctionData({
+      abi: ERC721ABI,
+      functionName: 'setApprovalForAll',
+      args: [operator as `0x${string}`, true],
+    });
+
+    return {
+      from,
+      chainId,
+      data: encodedData,
+      to: contractAddress,
+    };
+  };
+
+  getSeaportCounter = async ({
+    chainId,
+    address,
+  }: {
+    chainId: number;
+    address: string;
+  }) => {
+    const chain = findChain({ id: chainId });
+    if (!chain) {
+      throw new Error('wrong chain');
+    }
+    const data = encodeFunctionData({
+      abi: SeaportABI,
+      functionName: 'getCounter',
+      args: [address as `0x${string}`],
+    });
+
+    const res = await this.requestETHRpc(
+      {
+        method: 'eth_call',
+        params: [
+          {
+            data: data,
+            to: CROSS_CHAIN_SEAPORT_V1_6_ADDRESS,
+          },
+          'latest',
+        ],
+      },
+      chain.serverId
+    );
+
+    const value = decodeFunctionResult({
+      abi: SeaportABI,
+      functionName: 'getCounter',
+      data: res,
+    });
+    return Number(value);
+  };
+
+  buildCancelNFTListTx = ({
+    address,
+    chainId,
+    orders,
+  }: {
+    address: string;
+    chainId: number;
+    orders: OrderComponents[];
+  }) => {
+    try {
+      const data = encodeFunctionData({
+        abi: SeaportABI,
+        functionName: 'cancel',
+        args: [orders as any],
+      });
+
+      return {
+        chainId,
+        from: address,
+        to: CROSS_CHAIN_SEAPORT_V1_6_ADDRESS,
+        data,
+      };
+    } catch (e) {
+      console.error(e);
+      throw e;
+    }
+  };
+
+  buildCreateListingTypedData = async (
+    parmas: Parameters<typeof buildCreateListingTypedData>[0]
+  ) => {
+    const counter =
+      parmas.counter ||
+      (await this.getSeaportCounter({
+        chainId: parmas.chainId,
+        address: parmas.sellerAddress,
+      }));
+    return buildCreateListingTypedData({ ...parmas, counter });
+  };
+
+  buildAcceptNFTOfferTx = async ({
+    address,
+    chainId,
+    order,
+    collectionId,
+    innerId,
+    quantity,
+    isIncludeCreatorFee,
+  }: {
+    address: string;
+    chainId: number;
+    collectionId: string;
+    innerId: string;
+    order: NonNullable<NFTDetail['best_offer_order']>;
+    quantity?: number;
+    isIncludeCreatorFee?: boolean;
+  }) => {
+    const chain = findChain({
+      id: chainId,
+    });
+    if (!chain) {
+      throw new Error('chain not found');
+    }
+    const res = await this.openapi.prepareAcceptNFTOffer({
+      chain_id: chain?.serverId,
+      order_hash: order.order_hash,
+      fulfiller: address,
+      collection_id: collectionId,
+      inner_id: innerId,
+      quantity,
+      include_optional_creator_fees: isIncludeCreatorFee,
+    });
+    const fulfillmentData = res.data;
+    const transaction = fulfillmentData.fulfillment_data.transaction;
+    const inputData = transaction.input_data;
+    const FULFILL_BASIC_ORDER_ALIAS = 'fulfillBasicOrder_efficient_6GL6yc';
+    // Extract function name and build parameters array in correct order
+    const rawFunctionName = transaction.function.split('(')[0];
+    const functionName =
+      rawFunctionName === FULFILL_BASIC_ORDER_ALIAS
+        ? 'fulfillBasicOrder'
+        : rawFunctionName;
+    let params: unknown[];
+
+    // Order parameters based on the function being called
+    if (
+      functionName === 'fulfillAdvancedOrder' &&
+      'advancedOrder' in inputData
+    ) {
+      params = [
+        inputData.advancedOrder,
+        inputData.criteriaResolvers || [],
+        inputData.fulfillerConduitKey ||
+          '0x0000000000000000000000000000000000000000000000000000000000000000',
+        inputData.recipient,
+      ];
+    } else if (
+      (functionName === 'fulfillBasicOrder' ||
+        rawFunctionName === FULFILL_BASIC_ORDER_ALIAS) &&
+      'basicOrderParameters' in inputData
+    ) {
+      params = [inputData.basicOrderParameters];
+    } else if (functionName === 'fulfillOrder' && 'order' in inputData) {
+      params = [
+        inputData.order,
+        inputData.fulfillerConduitKey ||
+          '0x0000000000000000000000000000000000000000000000000000000000000000',
+        inputData.recipient,
+      ];
+    } else {
+      // Fallback: try to use values in object order
+      params = Object.values(inputData);
+    }
+    try {
+      const encodedData = encodeFunctionData({
+        abi: SeaportABI,
+        functionName: functionName as any,
+        args: params as any,
+      });
+
+      // todo check this
+      return {
+        chainId,
+        from: address,
+        to: transaction.to,
+        value: transaction.value,
+        data: encodedData,
+      };
+    } catch (e) {
+      console.error(e);
+      throw e;
+    }
+  };
+
+  getRpcTxReceipt = transactionHistoryService.getRpcTxReceipt;
+
+  resetPerpsStore = perpsService.resetStore;
+
+  fetchRemoteConfig = async (): Promise<{
+    switches?: {
+      isPerpsInviteDisabled?: boolean;
+      rabbySyncTour20260403?: boolean;
+    };
+  }> => {
+    const url = appIsProd
+      ? 'https://download.rabby.io/downloads/wallet-config/rabby-extension.json'
+      : 'https://download.rabby.io/downloads/wallet-config-reg/rabby-extension.json';
+
+    return http.get(url).then((res) => res.data);
+  };
+  getInnerDappFrames = innerDappFrameService.getInnerDappFrames;
+  getInnerDappAccountByOrigin =
+    innerDappFrameService.getInnerDappAccountByOrigin;
+  setInnerDappAccount = innerDappFrameService.setInnerDappAccount;
+  setInnerDappId = innerDappFrameService.setInnerDappId;
+
+  updateDashboardPanelOrder = preferenceService.updateDashboardPanelOrder;
 }
 
 const wallet = new WalletController();
 autoLockService.onAutoLock = async () => {
   await wallet.lockWallet();
-  eventBus.emit(EVENTS.broadcastToUI, {
-    method: EVENTS.LOCK_WALLET,
-  });
 };
+// check if wallet needs to lock after sw re-active
+autoLockService.syncAutoLockAt();
+
 export default wallet;

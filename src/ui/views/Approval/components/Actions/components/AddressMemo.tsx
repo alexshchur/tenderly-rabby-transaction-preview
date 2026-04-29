@@ -1,18 +1,38 @@
-import React, { useRef } from 'react';
-import { Button, Form, Input } from 'antd';
+import React, { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Button, Form, Input, InputRef } from 'antd';
 import { useForm } from 'antd/lib/form/Form';
 import { Popup } from 'ui/component';
-import { useAlias } from '@/ui/utils';
+import styled from 'styled-components';
+
 import IconEdit from 'ui/assets/editpen.svg';
+import { useApprovalUtils } from '../../../hooks/useApprovalUtils';
+import clsx from 'clsx';
+import { Divide } from '../../Divide';
+
+const DIV = styled.div`
+  margin-top: 16px;
+  .popup-input {
+    &:hover {
+      border-color: var(--r-blue-default, #7084ff) !important;
+    }
+  }
+`;
 
 const AddressMemo = ({ address }: { address: string }) => {
-  const [addressAlias, updateAlias] = useAlias(address);
-  const inputRef = useRef<Input>(null);
+  const { alias } = useApprovalUtils();
+  const addressAlias = alias.accountMap[address]?.alias;
+  const inputRef = useRef<InputRef>(null);
   const [form] = useForm();
+  const { t } = useTranslation();
+
+  useEffect(() => {
+    alias.add(address);
+  }, [address]);
 
   const updateAddressMemo = (
     alias: string | undefined,
-    update: (memo: string) => void
+    update: (addr: string, memo: string) => void
   ) => {
     form.setFieldsValue({
       memo: alias,
@@ -21,17 +41,22 @@ const AddressMemo = ({ address }: { address: string }) => {
       inputRef.current?.focus();
     }, 50);
     const { destroy } = Popup.info({
-      title: 'Edit address note',
-      height: 215,
+      title: t('component.Contact.EditModal.title'),
+      isSupportDarkMode: true,
+      height: 224,
+      isNew: true,
+      bodyStyle: {
+        padding: '0 20px',
+      },
       content: (
-        <div className="pt-[4px]">
+        <DIV>
           <Form
             form={form}
             onFinish={async () => {
               form
                 .validateFields()
                 .then((values) => {
-                  return update(values.memo);
+                  return update(address, values.memo);
                 })
                 .then(() => {
                   destroy();
@@ -48,7 +73,7 @@ const AddressMemo = ({ address }: { address: string }) => {
             >
               <Input
                 ref={inputRef}
-                className="popup-input h-[48px]"
+                className="popup-input h-[52px] bg-r-neutral-card-1"
                 size="large"
                 placeholder="Please input address note"
                 autoFocus
@@ -58,18 +83,33 @@ const AddressMemo = ({ address }: { address: string }) => {
                 maxLength={50}
               ></Input>
             </Form.Item>
-            <div className="text-center">
+            <Divide className="bg-r-neutral-line absolute left-0" />
+            <div className="text-center flex gap-x-16 mt-20">
+              <Button
+                size="large"
+                type="ghost"
+                onClick={() => destroy()}
+                className={clsx(
+                  'w-[200px]',
+                  'text-blue-light',
+                  'border-blue-light',
+                  'hover:bg-[#8697FF1A] active:bg-[#0000001A]',
+                  'before:content-none'
+                )}
+              >
+                {t('global.Cancel')}
+              </Button>
               <Button
                 type="primary"
                 size="large"
                 className="w-[200px]"
                 htmlType="submit"
               >
-                Confirm
+                {t('global.confirm')}
               </Button>
             </div>
           </Form>
-        </div>
+        </DIV>
       ),
     });
   };
@@ -77,7 +117,7 @@ const AddressMemo = ({ address }: { address: string }) => {
   return (
     <div
       className="inline-flex cursor-pointer"
-      onClick={() => updateAddressMemo(addressAlias, updateAlias)}
+      onClick={() => updateAddressMemo(addressAlias, alias.update)}
     >
       <span className="mr-6">{addressAlias || '-'}</span>
       <img src={IconEdit} className="icon-edit-alias icon w-[13px]" />

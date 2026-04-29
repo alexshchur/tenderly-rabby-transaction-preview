@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Popup, Checkbox } from 'ui/component';
 import styled, { createGlobalStyle } from 'styled-components';
 
@@ -9,7 +10,7 @@ const UserListDrawerWrapper = styled.div`
     font-weight: 500;
     font-size: 22px;
     line-height: 26px;
-    color: #13141a;
+    color: var(--r-neutral-title-1, #192945);
     .logo {
       width: 24px;
       height: 24px;
@@ -19,7 +20,7 @@ const UserListDrawerWrapper = styled.div`
 `;
 
 const Footer = styled.div`
-  background: #f5f6fa;
+  background: var(--r-neutral-card-2, #f2f4f7);
   border-radius: 6px;
   .item {
     display: flex;
@@ -30,17 +31,17 @@ const Footer = styled.div`
     font-weight: 500;
     font-size: 13px;
     line-height: 15px;
-    color: #13141a;
+    color: var(--r-neutral-title-1, #192945);
     position: relative;
     border: 1px solid transparent;
     .rabby-checkbox__wrapper {
       .rabby-checkbox {
-        border: 1px solid #707280;
-        background-color: #fff !important;
+        border: 1px solid var(--r-neutral-line);
+        background-color: var(--r-neutral-foot) !important;
       }
       &.checked {
         .rabby-checkbox {
-          background-color: #8697ff !important;
+          background-color: var(--r-blue-default, #7084ff) !important;
           border: none;
         }
       }
@@ -52,11 +53,11 @@ const Footer = styled.div`
       left: 18px;
       width: 328px;
       height: 1px;
-      background-color: #e5e9ef;
+      background-color: var(--r-neutral-line, #e5e9ef);
     }
     &:hover {
-      background: rgba(134, 151, 255, 0.1);
-      border: 1px solid #8697ff;
+      background: var(--r-blue-light-1, #eef1ff);
+      border: 1px solid var(--r-blue-default, #7084ff);
       border-radius: 6px;
     }
     &:nth-last-child(1) {
@@ -104,14 +105,17 @@ const UserListDrawer = ({
   visible,
   onClose,
 }: Props) => {
+  const { t } = useTranslation();
+
   return (
     <Popup
       visible={visible}
       onClose={onClose}
       height="340"
       closable
-      title="Manage whitelist/blacklist"
+      title={t('page.connect.manageWhiteBlackList')}
       className="user-list-drawer"
+      isSupportDarkMode
     >
       <GlobalStyle />
       <UserListDrawerWrapper>
@@ -127,7 +131,7 @@ const UserListDrawer = ({
           className="item"
           onClick={() => onChange({ onBlacklist: false, onWhitelist: false })}
         >
-          <div>No mark</div>
+          <div>{t('page.connect.noMark')}</div>
           <div>
             <Checkbox
               checked={!onWhitelist && !onBlacklist}
@@ -141,7 +145,9 @@ const UserListDrawer = ({
           className="item"
           onClick={() => onChange({ onBlacklist: false, onWhitelist: true })}
         >
-          <div className="text-green">Trusted</div>
+          <div className="text-r-green-default">
+            {t('page.connect.trusted')}
+          </div>
           <div>
             <Checkbox
               checked={onWhitelist}
@@ -155,7 +161,7 @@ const UserListDrawer = ({
           className="item"
           onClick={() => onChange({ onBlacklist: true, onWhitelist: false })}
         >
-          <div className="text-red">Blocked</div>
+          <div className="text-r-red-default">{t('page.connect.blocked')}</div>
           <div>
             <Checkbox
               checked={onBlacklist}

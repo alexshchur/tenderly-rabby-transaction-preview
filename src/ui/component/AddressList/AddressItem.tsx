@@ -104,7 +104,7 @@ const AddressItem = memo(
         if (WALLET_BRAND_CONTENT[brandName]) {
           return (
             <Trans
-              i18nKey="addressTypeTip"
+              i18nKey="component.AddressList.AddressItem.addressTypeTip"
               values={{
                 type: WALLET_BRAND_CONTENT[brandName].name,
               }}
@@ -194,6 +194,7 @@ const AddressItem = memo(
               <Tooltip
                 overlayClassName="rectangle addressType__tooltip"
                 placement="topRight"
+                align={{ offset: [12, 5] }}
                 title={formatAddressTooltip(
                   account.type,
                   BRAND_ALIAN_TYPE_TEXT[account.brandName] || account.brandName
@@ -218,6 +219,7 @@ const AddressItem = memo(
                 <div className="brand-name flex">
                   {!stopEditing && editing ? (
                     <Input
+                      className="text-r-neutral-title-1"
                       value={alianName}
                       defaultValue={alianName}
                       onChange={handleAlianNameChange}

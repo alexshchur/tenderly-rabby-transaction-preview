@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { CHAINS } from 'consts';
 import { getTokenSymbol } from 'ui/utils/token';
 import { TokenItem } from 'background/service/openapi';
@@ -6,15 +6,20 @@ import IconUnknown from 'ui/assets/token-default.svg';
 import './style.less';
 import clsx from 'clsx';
 import { TooltipWithMagnetArrow } from '../Tooltip/TooltipWithMagnetArrow';
+import { findChain } from '@/utils/chain';
+import { Tooltip } from 'antd';
 
 const TokenWithChain = ({
   token,
   hideConer,
   width = '28px',
   height = '28px',
+  chainSize = 14,
   noRound = false,
   hideChainIcon = false,
   isShowChainTooltip = false,
+  className,
+  chainClassName,
 }: {
   token: TokenItem;
   width?: string;
@@ -23,14 +28,25 @@ const TokenWithChain = ({
   noRound?: boolean;
   hideChainIcon?: boolean;
   isShowChainTooltip?: boolean;
+  className?: string;
+  chainSize?: string | number;
+  chainClassName?: string;
 }) => {
   const chainServerId = token.chain;
-  const chain = Object.values(CHAINS).find(
-    (item) => item.serverId === chainServerId
+  const chain = findChain({
+    serverId: chainServerId,
+  });
+
+  const chainStyle = useMemo(
+    () => ({
+      width: chainSize,
+      height: chainSize,
+    }),
+    [chainSize]
   );
   return (
     <div
-      className={clsx('token-with-chain', noRound && 'no-round')}
+      className={clsx('token-with-chain', noRound && 'no-round', className)}
       style={{ width, height }}
     >
       <img
@@ -42,14 +58,23 @@ const TokenWithChain = ({
       {!hideChainIcon &&
         (!hideConer || chain?.id) &&
         (isShowChainTooltip ? (
-          <TooltipWithMagnetArrow
+          <Tooltip
             title={chain?.name}
-            className="rectangle w-[max-content]"
+            overlayClassName={clsx('rectangle w-[max-content]', chainClassName)}
+            placement="top"
           >
-            <img className="chain-symbol" src={chain?.logo || IconUnknown} />
-          </TooltipWithMagnetArrow>
+            <img
+              className={clsx('chain-symbol', chainClassName)}
+              style={chainStyle}
+              src={chain?.logo || IconUnknown}
+            />
+          </Tooltip>
         ) : (
-          <img className="chain-symbol" src={chain?.logo || IconUnknown} />
+          <img
+            className={clsx('chain-symbol', chainClassName)}
+            style={chainStyle}
+            src={chain?.logo || IconUnknown}
+          />
         ))}
     </div>
   );
@@ -63,7 +88,9 @@ export const IconWithChain = ({
   height = '28px',
   noRound = false,
   hideChainIcon = false,
+  chainSize,
   isShowChainTooltip = false,
+  chainClassName,
 }: {
   iconUrl?: string;
   chainServerId: string;
@@ -73,9 +100,21 @@ export const IconWithChain = ({
   noRound?: boolean;
   hideChainIcon?: boolean;
   isShowChainTooltip?: boolean;
+  chainSize?: string;
+  chainClassName?: string;
 }) => {
-  const chain = Object.values(CHAINS).find(
-    (item) => item.serverId === chainServerId
+  const chain = findChain({
+    serverId: chainServerId,
+  });
+  const chainStyle = useMemo(
+    () =>
+      chainSize
+        ? {
+            width: chainSize,
+            height: chainSize,
+          }
+        : {},
+    [chainSize]
   );
   return (
     <div
@@ -95,10 +134,18 @@ export const IconWithChain = ({
             title={chain?.name}
             className="rectangle w-[max-content]"
           >
-            <img className="chain-symbol" src={chain?.logo || IconUnknown} />
+            <img
+              className={clsx('chain-symbol', chainClassName)}
+              src={chain?.logo || IconUnknown}
+              style={chainStyle}
+            />
           </TooltipWithMagnetArrow>
         ) : (
-          <img className="chain-symbol" src={chain?.logo || IconUnknown} />
+          <img
+            className={clsx('chain-symbol', chainClassName)}
+            src={chain?.logo || IconUnknown}
+            style={chainStyle}
+          />
         ))}
     </div>
   );

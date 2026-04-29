@@ -1,332 +1,289 @@
-import { CEX } from '@/constant';
-import { formatAmount, formatUsdValue } from '@/ui/utils';
+import { formatAmount, formatUsdValue, isSameAddress } from '@/ui/utils';
 import { CHAINS_ENUM } from '@debank/common';
-import { TokenItem, CEXQuote } from '@rabby-wallet/rabby-api/dist/types';
-import { DEX_ENUM } from '@rabby-wallet/rabby-swap';
+import { TokenItem } from '@rabby-wallet/rabby-api/dist/types';
 import { QuoteResult } from '@rabby-wallet/rabby-swap/dist/quote';
-import { Tooltip } from 'antd';
 import clsx from 'clsx';
-import React, { useMemo, useCallback, useState } from 'react';
-import { useCss, useDebounce } from 'react-use';
+import React, { useMemo, useCallback, useEffect } from 'react';
 import styled from 'styled-components';
 import { QuoteLogo } from './QuoteLogo';
 import BigNumber from 'bignumber.js';
 import ImgLock from '@/ui/assets/swap/lock.svg';
-import ImgGas from '@/ui/assets/swap/gas.svg';
-import ImgWarning from '@/ui/assets/swap/warn.svg';
+import { ReactComponent as RcIconGasCC } from '@/ui/assets/swap/gas-cc.svg';
 import ImgVerified from '@/ui/assets/swap/verified.svg';
-import ImgWhiteWarning from '@/ui/assets/swap/warning-white.svg';
 
 import {
   QuotePreExecResultInfo,
   QuoteProvider,
   isSwapWrapToken,
 } from '../hooks/quote';
-import {
-  useSetQuoteVisible,
-  useSetSettingVisible,
-  useVerifySdk,
-} from '../hooks';
-import { useRabbySelector } from '@/ui/store';
+import { useSetQuoteVisible } from '../hooks';
 import { getTokenSymbol } from '@/ui/utils/token';
 import { TooltipWithMagnetArrow } from '@/ui/component/Tooltip/TooltipWithMagnetArrow';
+import { useTranslation } from 'react-i18next';
+import { TokenWithChain } from '@/ui/component';
+import { Tooltip } from 'antd';
+
+const GAS_USE_AMOUNT_LIMIT = 2_000_000;
 
 const ItemWrapper = styled.div`
+  --quote--border-width: 1px;
   position: relative;
   height: 60px;
-  font-size: 12px;
-  padding: 0 12px;
+  font-size: 13px;
+  padding: 0 16px;
   display: flex;
   align-items: center;
-  color: #13141a;
+  background: var(--r-neutral-card-1, #fff);
 
   border-radius: 6px;
   box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.08);
   border-radius: 6px;
-  border: 1px solid transparent;
-  background: white;
+  border: var(--quote--border-width) solid transparent;
   cursor: pointer;
 
-  .disabled-trade {
-    position: absolute;
-    left: 0;
-    top: 0;
-    transform: translateY(-20px);
-    opacity: 0;
-    width: 100%;
-    height: 0;
-    padding-left: 16px;
-    background: #000000;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    font-size: 12px;
-    gap: 8px;
-    font-weight: 400;
-    font-size: 12px;
-    color: #ffffff;
-    pointer-events: none;
-    &.active {
-      pointer-events: auto;
-      height: 100%;
-      transform: translateY(0);
-      opacity: 1;
-      /* transition: opacity 0.35s, transform 0.35s; */
+  &:hover:not(.disabled, .inSufficient, .active) {
+    &::after {
+      position: absolute;
+      content: '';
+      inset: calc(0px - var(--quote--border-width));
+      border: var(--quote--border-width) solid var(--r-blue-default, #7084ff);
+      background: transparent;
+      border-radius: 6px;
+      z-index: 2;
+      pointer-events: none;
     }
   }
 
-  &:hover:not(.disabled, .inSufficient) {
-    background: linear-gradient(
-        0deg,
-        rgba(134, 151, 255, 0.1),
-        rgba(134, 151, 255, 0.1)
-      ),
-      #ffffff;
-    border: 1px solid #8697ff;
+  &.active:not(.disabled, .inSufficient) {
+    background: var(--r-blue-light-1, #eef1ff);
+    &::after {
+      position: absolute;
+      content: '';
+      inset: calc(0px - var(--quote--border-width));
+      border: var(--quote--border-width) solid var(--r-blue-default, #7084ff);
+      background: transparent;
+      border-radius: 6px;
+      z-index: 2;
+      pointer-events: none;
+    }
   }
-  &.active {
-    outline: 2px solid #8697ff;
-  }
+
   &.disabled {
-    height: 56px;
     border-color: transparent;
     box-shadow: none;
     background-color: transparent;
-    border-radius: 6px;
     cursor: not-allowed;
   }
-  &.error {
-  }
+
   &:not(.cex).inSufficient,
   &:not(.cex).disabled {
-    height: 60px;
-    border: 1px solid #e5e9ef;
-    border-radius: 6px;
+    border: var(--quote--border-width) solid var(--r-neutral-line, #d3d8e0);
     box-shadow: none;
   }
 
-  &.cex {
-    font-weight: 500;
-    font-size: 13px;
-    line-height: 15px;
-    color: #13141a;
-    height: 48px;
-    background-color: transparent;
-    border: none;
-    outline: none;
-  }
+  &.dex {
+    justify-content: space-between;
+    height: 88px;
+    align-items: flex-start;
+    padding-top: 20px;
+    padding-bottom: 16px;
 
-  .price {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: #707280;
-    .receiveNum {
-      font-size: 15px;
-      font-family: 500px;
-      max-width: 130px;
-      display: inline-block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-weight: 500;
-      color: #707280;
-      .toToken {
-        color: #13141a;
-      }
+    &.error {
+      height: auto;
+      padding: 14px 16px;
     }
   }
-  .no-price {
-    color: #13141a;
+
+  .receiveNum {
+    font-size: 16px;
+    max-width: 130px;
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+    color: var(--r-neutral-title-1, #192945);
   }
 
   .percent {
     font-weight: 500;
     font-size: 13px;
     font-weight: 500;
-    color: #27c193;
+    color: var(--r-blue-default, #7084ff);
     &.red {
-      color: #ec5151;
+      color: var(--r-red-default, #e34935);
     }
-  }
-
-  .diff {
-    margin-left: auto;
   }
 `;
 
 export interface QuoteItemProps {
+  onlyShowErrorQuote?: boolean;
   quote: QuoteResult | null;
   name: string;
+  active?: boolean;
   loading?: boolean;
   payToken: TokenItem;
   receiveToken: TokenItem;
   payAmount: string;
   chain: CHAINS_ENUM;
-  bestAmount: string;
   isBestQuote: boolean;
-  active: boolean;
+  bestQuoteGasUsd: string;
+  bestQuoteAmount: string;
   userAddress: string;
   slippage: string;
   fee: string;
   isLoading?: boolean;
   quoteProviderInfo: { name: string; logo: string };
   inSufficient: boolean;
-  setActiveProvider: React.Dispatch<
+  setActiveProvider?: React.Dispatch<
     React.SetStateAction<QuoteProvider | undefined>
   >;
+  sortIncludeGasFee: boolean;
 }
 
 export const DexQuoteItem = (
   props: QuoteItemProps & {
     preExecResult: QuotePreExecResultInfo;
+    onErrQuote?: React.Dispatch<React.SetStateAction<string[]>>;
+    onlyShow?: boolean;
   }
 ) => {
   const {
-    isLoading,
+    onlyShow,
     quote,
     name: dexId,
+    active,
     loading,
-    bestAmount,
+    bestQuoteAmount,
+    bestQuoteGasUsd,
     payToken,
     receiveToken,
     payAmount,
     chain,
-    active,
-    userAddress,
     isBestQuote,
-    slippage,
-    fee,
     inSufficient,
     preExecResult,
     quoteProviderInfo,
-    setActiveProvider: updateActiveQuoteProvider,
+    setActiveProvider,
+    sortIncludeGasFee,
   } = props;
 
-  const openSwapSettings = useSetSettingVisible();
+  const { t } = useTranslation();
+
   const openSwapQuote = useSetQuoteVisible();
 
-  const tradeList = useRabbySelector((s) => s.swap.tradeList);
-  const disabledTrade = useMemo(
-    () =>
-      !tradeList?.[dexId] &&
-      !isSwapWrapToken(payToken.id, receiveToken.id, chain),
-    [tradeList, dexId, payToken.id, receiveToken.id, chain]
-  );
-
-  const { isSdkDataPass } = useVerifySdk({
-    chain,
-    dexId: dexId as DEX_ENUM,
-    slippage,
-    data: {
-      ...quote,
-      fromToken: payToken.id,
-      fromTokenAmount: new BigNumber(payAmount)
-        .times(10 ** payToken.decimals)
-        .toFixed(0, 1),
-      toToken: receiveToken?.id,
-    } as typeof quote,
-    payToken,
-    receiveToken,
-  });
+  const isSdkDataPass = !!preExecResult?.isSdkPass;
 
   const halfBetterRateString = '';
 
   const [
-    middleContent,
-    rightContent,
+    receiveOrErrorContent,
+    bestQuotePercent,
     disabled,
     receivedTokenUsd,
     diffReceivedTokenUsd,
   ] = useMemo(() => {
-    let center: React.ReactNode = (
-      <div className="text-15 text-gray-title font-medium">-</div>
-    );
-    let right: React.ReactNode = '';
+    let receiveOrErrorContent: React.ReactNode = null;
+    let bestQuotePercent: React.ReactNode = null;
     let disable = false;
-    let receivedUsd = '0';
-    let diffUsd = '0';
+    let receivedTokenUsd: React.ReactNode = null;
+    let diffUsd: React.ReactNode = null;
+    const actualReceiveAmount = new BigNumber(quote?.toTokenAmount || 0)
+      .div(10 ** (quote?.toTokenDecimals || receiveToken.decimals))
+      .toString();
 
-    const actualReceiveAmount = inSufficient
-      ? new BigNumber(quote?.toTokenAmount || 0)
-          .div(10 ** (quote?.toTokenDecimals || receiveToken.decimals))
-          .toString()
-      : preExecResult?.swapPreExecTx.balance_change.receive_token_list[0]
-          ?.amount;
     if (actualReceiveAmount || dexId === 'WrapToken') {
       const receiveAmount =
-        actualReceiveAmount || dexId === 'WrapToken' ? payAmount : 0;
-      const bestQuoteAmount = new BigNumber(bestAmount);
+        actualReceiveAmount || (dexId === 'WrapToken' ? payAmount : 0);
+      const bestQuoteAmountBn = new BigNumber(bestQuoteAmount);
       const receivedTokeAmountBn = new BigNumber(receiveAmount);
-      const percent = new BigNumber(receiveAmount)
-        .minus(bestAmount || 0)
-        .div(bestAmount)
+
+      const receivedUsdBn = receivedTokeAmountBn
+        .times(receiveToken.price)
+        .minus(sortIncludeGasFee ? preExecResult?.gasUsdValue || 0 : 0);
+
+      const bestQuoteUsdBn = bestQuoteAmountBn
+        .times(receiveToken.price)
+        .minus(sortIncludeGasFee ? bestQuoteGasUsd : 0);
+
+      let percent = receivedUsdBn
+        .minus(bestQuoteUsdBn)
+        .div(bestQuoteUsdBn)
+        .abs()
         .times(100);
 
-      receivedUsd = formatUsdValue(
+      if (!receiveToken.price) {
+        percent = receivedTokeAmountBn
+          .minus(bestQuoteAmountBn)
+          .div(bestQuoteAmountBn)
+          .abs()
+          .times(100);
+      }
+
+      receivedTokenUsd = formatUsdValue(
         receivedTokeAmountBn.times(receiveToken.price || 0).toString(10)
       );
 
       diffUsd = formatUsdValue(
-        new BigNumber(receiveAmount)
-          .minus(bestQuoteAmount || 0)
-          .times(receiveToken.price || 0)
-          .toString(10)
+        receivedUsdBn.minus(bestQuoteUsdBn).toString(10)
       );
 
       const s = formatAmount(receivedTokeAmountBn.toString(10));
       const receiveTokenSymbol = getTokenSymbol(receiveToken);
-      center = (
+      receiveOrErrorContent = (
         <span className="receiveNum" title={`${s} ${receiveTokenSymbol}`}>
-          <span className="toToken" title={s}>
-            {s}
-          </span>{' '}
-          {receiveTokenSymbol}
+          {s}
         </span>
       );
 
-      right = (
-        <span className={clsx('percent', percent.lt(0) && 'red')}>
+      bestQuotePercent = (
+        <span className={clsx('percent', { red: !isBestQuote })}>
           {isBestQuote
-            ? 'Best'
-            : `${percent.toFixed(2, BigNumber.ROUND_DOWN)}%`}
+            ? t('page.swap.best')
+            : `-${percent.toFixed(2, BigNumber.ROUND_DOWN)}%`}
         </span>
       );
     }
 
     if (!quote?.toTokenAmount) {
-      right = (
-        <div className="text-gray-content text-[13px] font-normal">
-          Unable to fetch the price
+      receiveOrErrorContent = (
+        <div className="text-r-neutral-foot text-[13px] font-normal">
+          {t('page.swap.unable-to-fetch-the-price')}
         </div>
       );
-      center = <div className="text-15 text-gray-title font-medium">-</div>;
+      bestQuotePercent = null;
       disable = true;
     }
 
     if (quote?.toTokenAmount) {
       if (!preExecResult && !inSufficient) {
-        center = <div className="text-15 text-gray-title font-medium">-</div>;
-        right = (
-          <div className="text-gray-content text-[13px] font-normal">
-            Fail to simulate transaction
+        receiveOrErrorContent = (
+          <div className="text-r-neutral-foot text-[13px] font-normal">
+            {t('page.swap.fail-to-simulate-transaction')}
           </div>
         );
+        bestQuotePercent = null;
         disable = true;
       }
     }
 
-    if (!isSdkDataPass) {
+    if (!isSdkDataPass && !!preExecResult) {
       disable = true;
-      center = <div className="text-15 text-gray-title font-medium">-</div>;
-      right = (
-        <div className="text-gray-content text-[13px] font-normal">
-          Security verification failed
+      receiveOrErrorContent = (
+        <div className="text-r-neutral-foot text-[13px] font-normal">
+          {t('page.swap.security-verification-failed')}
         </div>
       );
+      bestQuotePercent = null;
     }
-    return [center, right, disable, receivedUsd, diffUsd];
+    return [
+      receiveOrErrorContent,
+      bestQuotePercent,
+      disable,
+      receivedTokenUsd,
+      diffUsd,
+      receiveToken,
+    ];
   }, [
     quote?.toTokenAmount,
     quote?.toTokenDecimals,
@@ -336,82 +293,34 @@ export const DexQuoteItem = (
     receiveToken.symbol,
     preExecResult,
     isSdkDataPass,
-    bestAmount,
+    bestQuoteAmount,
+    bestQuoteGasUsd,
     isBestQuote,
+    sortIncludeGasFee,
   ]);
 
-  const quoteWarning = useMemo(() => {
-    if (!quote?.toTokenAmount || !preExecResult) {
-      return;
-    }
-
-    if (isSwapWrapToken(payToken.id, receiveToken.id, chain)) {
-      return;
-    }
-    const receivedTokeAmountBn = new BigNumber(quote?.toTokenAmount || 0).div(
-      10 ** (quote?.toTokenDecimals || receiveToken.decimals)
+  const gasFeeTooHigh = useMemo(() => {
+    return (
+      new BigNumber(preExecResult?.gasUsed || 0).gte(GAS_USE_AMOUNT_LIMIT) &&
+      chain === CHAINS_ENUM.ETH
     );
-
-    const diff = receivedTokeAmountBn
-      .minus(
-        preExecResult?.swapPreExecTx?.balance_change.receive_token_list[0]
-          ?.amount || 0
-      )
-      .div(receivedTokeAmountBn);
-
-    const diffPercent = diff.times(100);
-
-    return diffPercent.gt(0.01)
-      ? ([
-          formatAmount(receivedTokeAmountBn.toString(10)) +
-            getTokenSymbol(receiveToken),
-          `${diffPercent.toPrecision(2)}% (${formatAmount(
-            receivedTokeAmountBn
-              .minus(
-                preExecResult?.swapPreExecTx?.balance_change
-                  .receive_token_list[0]?.amount || 0
-              )
-              .toString(10)
-          )} ${getTokenSymbol(receiveToken)})`,
-        ] as [string, string])
-      : undefined;
-  }, [
-    chain,
-    payToken.id,
-    preExecResult,
-    quote?.toTokenAmount,
-    quote?.toTokenDecimals,
-    receiveToken.decimals,
-    receiveToken.id,
-    receiveToken.symbol,
-  ]);
-
-  const CheckIcon = useCallback(() => {
-    if (disabled || loading || !quote?.tx || !preExecResult?.swapPreExecTx) {
-      return null;
-    }
-    return <WarningOrChecked quoteWarning={quoteWarning} />;
-  }, [
-    disabled,
-    loading,
-    quote?.tx,
-    preExecResult?.swapPreExecTx,
-    quoteWarning,
-  ]);
-
-  const [disabledTradeTipsOpen, setDisabledTradeTipsOpen] = useState(false);
+  }, [preExecResult, chain]);
 
   const handleClick = useCallback(() => {
-    if (disabledTrade) {
-      // setDisabledTradeTipsOpen(true);
+    if (gasFeeTooHigh) {
       return;
     }
+
     if (inSufficient) {
-      // message.error('Insufficient balance to select the rate');
       return;
     }
-    if (active || disabled || disabledTrade) return;
-    updateActiveQuoteProvider({
+    if (disabled) return;
+    const actualReceiveAmount =
+      new BigNumber(quote?.toTokenAmount || 0)
+        .div(10 ** (quote?.toTokenDecimals || receiveToken.decimals))
+        .toString() || 0;
+    setActiveProvider?.({
+      manualClick: true,
       name: dexId,
       quote,
       gasPrice: preExecResult?.gasPrice,
@@ -419,284 +328,221 @@ export const DexQuoteItem = (
       shouldTwoStepApprove: !!preExecResult?.shouldTwoStepApprove,
       error: !preExecResult,
       halfBetterRate: halfBetterRateString,
-      quoteWarning,
-      actualReceiveAmount:
-        preExecResult?.swapPreExecTx.balance_change.receive_token_list[0]
-          ?.amount || '',
+      quoteWarning: undefined,
+      actualReceiveAmount,
       gasUsd: preExecResult?.gasUsd,
+      preExecResult: preExecResult,
     });
 
     openSwapQuote(false);
   }, [
-    active,
     disabled,
     inSufficient,
-    updateActiveQuoteProvider,
+    setActiveProvider,
     dexId,
     quote,
     preExecResult,
-    quoteWarning,
+    gasFeeTooHigh,
+    receiveToken,
   ]);
 
-  useDebounce(
-    () => {
-      if (active) {
-        updateActiveQuoteProvider((e) => ({
-          ...e,
-          name: dexId,
-          quote,
-          gasPrice: preExecResult?.gasPrice,
-          shouldApproveToken: !!preExecResult?.shouldApproveToken,
-          shouldTwoStepApprove: !!preExecResult?.shouldTwoStepApprove,
-          error: !preExecResult,
-          halfBetterRate: halfBetterRateString,
-          quoteWarning,
-          actualReceiveAmount:
-            preExecResult?.swapPreExecTx.balance_change.receive_token_list[0]
-              ?.amount || '',
-          gasUsed: preExecResult?.gasUsd,
-        }));
-      }
-    },
-    300,
-    [
-      quoteWarning,
-      halfBetterRateString,
-      active,
-      dexId,
-      updateActiveQuoteProvider,
-      quote,
-      preExecResult,
-    ]
-  );
-
-  const isWrapTokensWap = useMemo(
+  const isWrapToken = useMemo(
     () => isSwapWrapToken(payToken.id, receiveToken.id, chain),
-    [payToken, receiveToken, chain]
+    [payToken?.id, receiveToken?.id, chain]
   );
 
-  return (
-    <ItemWrapper
-      onMouseEnter={() => {
-        if (disabledTrade && !inSufficient && quote && preExecResult) {
-          setDisabledTradeTipsOpen(true);
-        }
-      }}
-      onMouseLeave={() => {
-        setDisabledTradeTipsOpen(false);
-      }}
-      onClick={handleClick}
-      className={clsx(
-        active && 'active',
-        (disabledTrade || disabled) && 'disabled error',
-        inSufficient && !disabled && 'disabled inSufficient'
-      )}
-    >
-      <QuoteLogo loaded logo={quoteProviderInfo.logo} isLoading={isLoading} />
-
-      <div className="flex flex-col justify-center ml-8 flex-1">
-        <div className="flex items-center">
-          <div
-            className={clsx(
-              'flex items-center gap-2 w-[108px] max-w-[108px] text-gray-title text-opacity-80 relative'
-            )}
-          >
-            <span
-              className={clsx(
-                'text-13 font-medium text-gray-title',
-                inSufficient && !disabled && 'relative top-8'
-              )}
-            >
-              {quoteProviderInfo.name}
-            </span>
-            {!!preExecResult?.shouldApproveToken && (
-              <TooltipWithMagnetArrow
-                overlayClassName="rectangle w-[max-content]"
-                title="Need to approve token before swap"
-              >
-                <img src={ImgLock} className="w-14 h-14" />
-              </TooltipWithMagnetArrow>
-            )}
-          </div>
-
-          <div className="flex flex-col">
-            <div className="price relative">
-              {middleContent}
-              <CheckIcon />
-            </div>
-          </div>
-          {!isBestQuote && <div className="diff">{rightContent}</div>}
-        </div>
-
-        {!disabled && (
-          <div className="flex items-center text-12 text-gray-content">
-            <div className={clsx('flex items-center gap-2 w-[108px]')}>
-              {!inSufficient && (
-                <>
-                  <img src={ImgGas} className="w-14 h-14 relative top-[-1px]" />
-                  <span>{preExecResult?.gasUsd}</span>
-                </>
-              )}
-            </div>
-
-            <span>≈{receivedTokenUsd}</span>
-
-            {!isBestQuote && (
-              <span className="ml-auto text-right">{diffReceivedTokenUsd}</span>
-            )}
-          </div>
-        )}
-      </div>
-
-      {isBestQuote && <div className="diff">{rightContent}</div>}
-
-      <div
-        className={clsx('disabled-trade', disabledTradeTipsOpen && 'active')}
-      >
-        <img src={ImgWhiteWarning} className="w-12 h-12" />
-        <span>
-          This exchange is not enabled to trade by you.
-          <span
-            className="underline-transparent underline cursor-pointer ml-4"
-            onClick={(e) => {
-              e.stopPropagation();
-              openSwapSettings(true);
-              setDisabledTradeTipsOpen(false);
-            }}
-          >
-            Enable it
-          </span>
-        </span>
-      </div>
-    </ItemWrapper>
+  const isErrorQuote = useMemo(
+    () =>
+      !isSdkDataPass ||
+      !quote?.toTokenAmount ||
+      !!(quote?.toTokenAmount && !preExecResult && !inSufficient),
+    [isSdkDataPass, quote, preExecResult, inSufficient]
   );
-};
 
-export const CexQuoteItem = (props: {
-  name: string;
-  data: CEXQuote | null;
-  bestAmount: string;
-  isBestQuote: boolean;
-  isLoading?: boolean;
-  inSufficient: boolean;
-}) => {
-  const {
-    name,
-    data,
-    bestAmount,
-    isBestQuote,
-    isLoading,
-    inSufficient,
-  } = props;
-  const dexInfo = useMemo(() => CEX[name as keyof typeof CEX], [name]);
-
-  const [middleContent, rightContent] = useMemo(() => {
-    let center: React.ReactNode = (
-      <div className="text-15 text-gray-title font-medium">-</div>
-    );
-    let right: React.ReactNode = '';
-    let disable = false;
-
-    if (!data?.receive_token?.amount) {
-      right = (
-        <div className="text-gray-content text-[13px] font-normal">
-          This token pair is not supported
-        </div>
-      );
-      disable = true;
+  const tooltipVisible = useMemo(() => {
+    if (onlyShow) {
+      return false;
     }
+    if (gasFeeTooHigh || (inSufficient && !disabled)) {
+      return undefined;
+    }
+    return false;
+  }, [onlyShow, gasFeeTooHigh, inSufficient, disabled]);
 
-    if (data?.receive_token?.amount) {
-      const bestQuoteAmount = new BigNumber(bestAmount);
-      const receiveToken = data.receive_token;
-      const percent = new BigNumber(receiveToken.amount)
-        .minus(bestQuoteAmount || 0)
-        .div(bestQuoteAmount)
-        .times(100);
-      const s = formatAmount(receiveToken.amount.toString(10));
-      const receiveTokenSymbol = getTokenSymbol(receiveToken);
-
-      center = (
-        <span className="receiveNum" title={`${s} ${receiveTokenSymbol}`}>
-          <span className="toToken" title={s}>
-            {s}
-          </span>{' '}
-          {receiveTokenSymbol}
-        </span>
-      );
-
-      right = (
-        <span className={clsx('percent', percent.lt(0) && 'red')}>
-          {isBestQuote
-            ? 'Best'
-            : `${percent.toFixed(2, BigNumber.ROUND_DOWN)}%`}
-        </span>
+  useEffect(() => {
+    if (isErrorQuote && props.onlyShowErrorQuote) {
+      props?.onErrQuote?.((e) => {
+        return e.includes(dexId) ? e : [...e, dexId];
+      });
+    }
+    if (!props.onlyShowErrorQuote && !isErrorQuote) {
+      props?.onErrQuote?.((e) =>
+        e.includes(dexId) ? e.filter((e) => e !== dexId) : e
       );
     }
+  }, [props.onlyShowErrorQuote, isErrorQuote, dexId, props?.onErrQuote]);
 
-    return [center, right, disable];
-  }, [data?.receive_token, bestAmount, isBestQuote]);
-
-  return (
-    <ItemWrapper
-      className={clsx('cex disabled', !data?.receive_token?.amount && 'error')}
-    >
-      <QuoteLogo isCex logo={dexInfo.logo} isLoading={!!isLoading} />
-
-      <div className="flex flex-col justify-center ml-8 flex-1">
-        <div className="flex items-center">
-          <div className={clsx('flex items-center gap-4 w-[108px]')}>
-            <span>{dexInfo.name}</span>
-          </div>
-
-          <div className="flex flex-col">
-            <div className="price">{middleContent}</div>
-          </div>
-          <div className="diff">{rightContent}</div>
-        </div>
-      </div>
-    </ItemWrapper>
-  );
-};
-
-export const CexListWrapper = styled.div`
-  border: 0.5px solid rgba(255, 255, 255, 0.2);
-  border-radius: 6px;
-  & > div:not(:last-child) {
-    position: relative;
-    &:not(:last-child):before {
-      content: '';
-      position: absolute;
-      width: 440px;
-      height: 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-      left: 20px;
-      bottom: 0;
-    }
+  if (!isErrorQuote && props.onlyShowErrorQuote) {
+    return null;
   }
-`;
 
-const getQuoteLessWarning = ([receive, diff]: [string, string]) =>
-  `The receiving amount is estimated from Rabby transaction simulation. The offer provided by dex is ${receive}. You'll receive ${diff}  less than the expected offer.`;
+  if (!props.onlyShowErrorQuote && isErrorQuote) {
+    return null;
+  }
 
-export function WarningOrChecked({
-  quoteWarning,
-}: {
-  quoteWarning?: [string, string];
-}) {
+  return (
+    <Tooltip
+      overlayClassName="rectangle w-[max-content]"
+      placement="top"
+      title={
+        gasFeeTooHigh
+          ? t('page.swap.Gas-fee-too-high')
+          : t('page.swap.insufficient-balance')
+      }
+      visible={tooltipVisible}
+      align={{ offset: [0, 30] }}
+      arrowPointAtCenter
+    >
+      <ItemWrapper
+        onClick={onlyShow ? undefined : handleClick}
+        className={clsx(
+          'dex',
+          active && 'active',
+          disabled && 'disabled',
+          isErrorQuote && 'error',
+          inSufficient && !disabled && 'disabled inSufficient',
+          gasFeeTooHigh && 'disabled gasFeeTooHight',
+          onlyShow &&
+            'bg-transparent shadow-none p-0 h-auto hover:border-transparent hover:after:hidden'
+        )}
+      >
+        <div className="flex-1 flex flex-col gap-12">
+          <div className="flex items-center justify-between">
+            {/* dex logo */}
+            <div className="flex items-center gap-8 relative">
+              <QuoteLogo
+                loaded
+                logo={quoteProviderInfo.logo}
+                isLoading={props.onlyShow ? false : props.isLoading}
+              />
+              <span className="text-[16px] font-medium text-r-neutral-title-1">
+                {quoteProviderInfo.name}
+              </span>
+              {!!preExecResult?.shouldApproveToken && (
+                <TooltipWithMagnetArrow
+                  arrowPointAtCenter
+                  overlayClassName="rectangle w-[max-content]"
+                  title={t('page.swap.need-to-approve-token-before-swap')}
+                >
+                  <img src={ImgLock} className="w-16 h16" />
+                </TooltipWithMagnetArrow>
+              )}
+            </div>
+            {/* receive token */}
+            {receiveOrErrorContent !== null && (
+              <div className="flex items-center justify-end relative">
+                {!isErrorQuote && (
+                  <TokenWithChain
+                    token={props.receiveToken}
+                    width="20px"
+                    height="20px"
+                    hideChainIcon
+                    hideConer
+                  />
+                )}
+                <div className="ml-6 flex items-center">
+                  {receiveOrErrorContent}
+                </div>
+                {/* <CheckIcon /> */}
+              </div>
+            )}
+          </div>
+          {!isErrorQuote && (
+            <div className="flex items-center justify-between">
+              <div className={clsx('flex items-center')}>
+                <div
+                  className={clsx(
+                    'inline-flex items-center gap-4 px-4',
+                    gasFeeTooHigh && 'bg-r-red-light',
+                    inSufficient && 'hidden'
+                  )}
+                >
+                  <RcIconGasCC
+                    className={clsx(
+                      'text-r-neutral-foot w-16 h-16',
+                      gasFeeTooHigh
+                        ? 'text-rabby-red-default'
+                        : 'text-r-neutral-foot'
+                    )}
+                    viewBox="0 0 16 16"
+                  />
+                  <span
+                    className={clsx(
+                      'text-13',
+                      gasFeeTooHigh
+                        ? 'text-rabby-red-default'
+                        : 'text-r-neutral-foot'
+                    )}
+                  >
+                    {preExecResult?.gasUsd}
+                  </span>
+                </div>
+              </div>
+
+              <div
+                className={clsx(
+                  'flex items-center gap-6 justify-end',
+                  'text-13 font-medium',
+                  'relative'
+                )}
+              >
+                {disabled ? (
+                  <span className="text-r-red-default">{bestQuotePercent}</span>
+                ) : (
+                  <>
+                    <span className="text-r-neutral-foot font-normal whitespace-nowrap">
+                      {isWrapToken
+                        ? `≈ ${receivedTokenUsd}`
+                        : t('page.swap.usd-after-fees', {
+                            usd: receivedTokenUsd,
+                          })}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {!disabled && !onlyShow && (
+          <span
+            style={{
+              lineHeight: 'normal',
+            }}
+            className={clsx(
+              'absolute top-[-1px] left-[-1px] ',
+              'px-6 py-[1px] rounded-tl-[4px] rounded-br-[4px]',
+              props.isBestQuote ? 'bg-r-blue-light2' : 'bg-r-red-light',
+              'text-r-red-default'
+            )}
+          >
+            {bestQuotePercent}
+          </span>
+        )}
+      </ItemWrapper>
+    </Tooltip>
+  );
+};
+
+function CheckedIcon() {
+  const { t } = useTranslation();
   return (
     <TooltipWithMagnetArrow
+      arrowPointAtCenter
       overlayClassName={clsx('rectangle', 'w-[max-content]')}
-      title={
-        quoteWarning
-          ? getQuoteLessWarning(quoteWarning)
-          : 'By transaction simulation, the quote is valid'
-      }
+      title={t('page.swap.by-transaction-simulation-the-quote-is-valid')}
     >
-      <img
-        src={quoteWarning ? ImgWarning : ImgVerified}
-        className="w-[14px] h-[14px]"
-      />
+      <img src={ImgVerified} className="w-[16px] h-[16px]" />
     </TooltipWithMagnetArrow>
   );
 }

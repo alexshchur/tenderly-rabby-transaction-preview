@@ -1,12 +1,14 @@
+import ImgRabbyBadgeBgSemicircleShortLight from '@/ui/assets/badge/bg-semicircle-s-light.svg';
+import ImgRabbyBadgeBgSemicircleShortDark from '@/ui/assets/badge/bg-semicircle-s-dark.svg';
+import ImgRabbyBadgeBgSemicircleNoCodeLight from '@/ui/assets/badge/bg-semicircle-nocode-light.svg';
+import ImgRabbyBadgeBgSemicircleNoCodeDark from '@/ui/assets/badge/bg-semicircle-nocode-dark.svg';
 import { Modal } from '@/ui/component';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import styled from 'styled-components';
-import ImgRabbyBadgeBg from '@/ui/assets/badge/bg.svg';
-import ImgRabbyBadgeBg2 from '@/ui/assets/badge/bg2.svg';
+import styled, { css } from 'styled-components';
 
-import ImgRabbyBadgeM from '@/ui/assets/badge/rabby-badge-m.svg';
-import ImgRabbyBadgeL from '@/ui/assets/badge/rabby-badge-l.svg';
 import ImgInfo from '@/ui/assets/badge/info.svg';
+import ImgRabbyBadgeL from '@/ui/assets/badge/rabby-badge-l.svg';
+import ImgRabbyBadgeM from '@/ui/assets/badge/rabby-badge-m.svg';
 
 import { ReactComponent as RcIconClose } from '@/ui/assets/badge/close.svg';
 
@@ -19,11 +21,13 @@ import clsx from 'clsx';
 
 import Lottie from 'lottie-react';
 
-import * as animationData from './success.json';
-import { useAsync, useAsyncFn } from 'react-use';
-import { openInTab, useWallet } from '@/ui/utils';
-import { useHistory } from 'react-router-dom';
 import { CurrentAccount } from '@/ui/component/CurrentAccout';
+import { openInTab, useWallet } from '@/ui/utils';
+import { useTranslation } from 'react-i18next';
+import { useHistory } from 'react-router';
+import { useAsync, useAsyncFn } from 'react-use';
+import * as animationData from './success.json';
+import { useThemeMode } from '@/ui/hooks/usePreference';
 
 const RABBY_BADGE_URL = 'https://debank.com/official-badge/2';
 
@@ -31,12 +35,26 @@ const gotoDeBankRabbyBadge = () => {
   openInTab(RABBY_BADGE_URL);
 };
 
-const Wrapper = styled.div`
+const Wrapper = styled.div<{
+  isDarkMode?: boolean;
+}>`
   width: 360px;
   height: 480px;
   border-radius: 16px;
-  background-color: #fff;
-  background-image: url(${ImgRabbyBadgeBg});
+  border-radius: 16px;
+  background: var(--r-neutral-bg1, #1c1f2b);
+  color: var(--r-neutral-foot, #babec5);
+  box-shadow: 0px 24px 40px 0px rgba(19, 20, 26, 0.16);
+  ${(props) => {
+    if (props.isDarkMode) {
+      return css`
+        background-image: url(${ImgRabbyBadgeBgSemicircleShortDark});
+      `;
+    }
+    return css`
+      background-image: url(${ImgRabbyBadgeBgSemicircleShortLight});
+    `;
+  }}
   background-size: 360px 243px;
   background-repeat: no-repeat;
   background-size: contain;
@@ -46,7 +64,16 @@ const Wrapper = styled.div`
   align-items: center;
 
   &.noCode {
-    background-image: url(${ImgRabbyBadgeBg2});
+    ${(props) => {
+      if (props.isDarkMode) {
+        return css`
+          background-image: url(${ImgRabbyBadgeBgSemicircleNoCodeDark});
+        `;
+      }
+      return css`
+        background-image: url(${ImgRabbyBadgeBgSemicircleNoCodeLight});
+      `;
+    }}
     background-size: 360px 300px;
 
     .badge {
@@ -79,13 +106,13 @@ const Wrapper = styled.div`
   .codeInput {
     width: 320px;
     padding: 12px;
-    color: #13141a;
+    color: var(--r-neutral-title1, #f7fafc);
     font-size: 17px;
     font-style: normal;
     font-weight: 500;
     line-height: normal;
-    background: #f5f6fa;
-    border: 1px solid #dcdfe4;
+    /* background: #f5f6fa;
+    border: 1px solid #dcdfe4; */
     &::placeholder {
       color: #989aab;
       font-size: 15px;
@@ -95,7 +122,7 @@ const Wrapper = styled.div`
     }
     &:hover,
     &:focus {
-      border-color: #8697ff;
+      border-color: var(--r-blue-default, #7084ff);
     }
 
     &.red,
@@ -116,7 +143,6 @@ const Wrapper = styled.div`
       left: 0;
       margin-top: 12px;
       color: #ec5151;
-      font-family: Roboto;
       font-size: 13px;
       font-style: normal;
       font-weight: 400;
@@ -188,6 +214,7 @@ const Wrapper = styled.div`
 `;
 
 const ClaimRabbyBadge = ({ onClaimed }: { onClaimed?: () => void }) => {
+  const { t } = useTranslation();
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [swapTips, setSwapTips] = useState(false);
@@ -246,6 +273,8 @@ const ClaimRabbyBadge = ({ onClaimed }: { onClaimed?: () => void }) => {
     history.push('/dex-swap');
   }, []);
 
+  const { isDarkTheme } = useThemeMode();
+
   if (!lockErrorRef.current && !mintLoading && mintError?.message) {
     if (mintError?.message.includes('swap')) {
       setSwapTips(true);
@@ -272,16 +301,20 @@ const ClaimRabbyBadge = ({ onClaimed }: { onClaimed?: () => void }) => {
   }
 
   return (
-    <Wrapper className={clsx({ noCode })}>
-      <img src={ImgRabbyBadgeM} className="badge" alt="rabby badge" />
-      <div className="title">Claim Rabby Badge for</div>
+    <Wrapper className={clsx({ noCode })} isDarkMode={isDarkTheme}>
+      <img
+        src={ImgRabbyBadgeM}
+        className="badge"
+        alt={t('page.dashboard.rabbyBadge.imageLabel')}
+      />
+      <div className="title">{t('page.dashboard.rabbyBadge.title')}</div>
       <CurrentAccount noInvert={false} className="account" />
       {!noCode && (
         <>
-          <div className={clsx('box', swapTips && 'swap')}>
+          <div className={clsx('box widget-has-ant-input', swapTips && 'swap')}>
             <Input
               className={clsx('codeInput', error && 'red')}
-              placeholder="Enter claim code"
+              placeholder={t('page.dashboard.rabbyBadge.enterClaimCode')}
               value={code}
               onChange={onInputChange}
               autoFocus
@@ -291,10 +324,9 @@ const ClaimRabbyBadge = ({ onClaimed }: { onClaimed?: () => void }) => {
               <div className="swapTips">
                 <img src={ImgInfo} className="w-12 h-12 self-start mt-[3px]" />
                 <span>
-                  You need to complete a swap with notable dex within Rabby
-                  Wallet first.{' '}
+                  {t('page.dashboard.rabbyBadge.swapTip')}{' '}
                   <span onClick={gotoSwap} className="toSwap">
-                    Go to Swap
+                    {t('page.dashboard.rabbyBadge.goToSwap')}
                   </span>
                 </span>
               </div>
@@ -308,10 +340,10 @@ const ClaimRabbyBadge = ({ onClaimed }: { onClaimed?: () => void }) => {
             onClick={handleClaim}
             loading={mintLoading}
           >
-            Claim
+            {t('page.dashboard.rabbyBadge.claim')}
           </Button>
           <div className="tips" onClick={gotoDeBankRabbyBadge}>
-            View your claim code
+            {t('page.dashboard.rabbyBadge.viewYourClaimCode')}
           </div>
         </>
       )}
@@ -323,13 +355,13 @@ const ClaimRabbyBadge = ({ onClaimed }: { onClaimed?: () => void }) => {
           </>
         ) : (
           <>
-            <div>You haven’t activated claim code for this address </div>
+            <div>{t('page.dashboard.rabbyBadge.noCode')} </div>
             <Button
               type="primary"
               className="btn more"
               onClick={gotoDeBankRabbyBadge}
             >
-              <span>Learn more on DeBank</span>
+              <span>{t('page.dashboard.rabbyBadge.learnMoreOnDebank')}</span>
               <img src={ImgLink} className="ml-4 w-20 h-20" />
             </Button>
           </>
@@ -343,7 +375,7 @@ const ClaimSuccessWrapper = styled.div`
   width: 360px;
   height: 480px;
   border-radius: 16px;
-  background-color: #fff;
+  /* background-color: #fff; */
   position: relative;
   display: flex;
   flex-direction: column;
@@ -354,7 +386,7 @@ const ClaimSuccessWrapper = styled.div`
   }
   .title,
   .desc {
-    color: #13141a;
+    color: var(--r-neutral-title2, #fff);
     text-align: center;
     font-size: 24px;
     font-style: normal;
@@ -374,7 +406,7 @@ const ClaimSuccessWrapper = styled.div`
 
   .account {
     margin-bottom: 54px;
-    background: #f5f6fa;
+    background: var(--r-neutral-card2, rgba(255, 255, 255, 0.06));
   }
   .btn {
     width: 252px;
@@ -400,14 +432,23 @@ const ClaimSuccessWrapper = styled.div`
 `;
 
 const ClaimSuccess = ({ num }: { num: number }) => {
+  const { t } = useTranslation();
   return (
     <ClaimSuccessWrapper>
-      <img src={ImgRabbyBadgeL} className="badge" alt="rabby badge" />
-      <div className="desc">Rabby Valued User No.{num}</div>
-      <div className="title">Claim Success</div>
+      <img
+        src={ImgRabbyBadgeL}
+        className="badge"
+        alt={t('page.dashboard.rabbyBadge.imageLabel')}
+      />
+      <div className="desc">
+        {t('page.dashboard.rabbyBadge.rabbyValuedUserNo', {
+          num,
+        })}
+      </div>
+      <div className="title">{t('page.dashboard.rabbyBadge.claimSuccess')}</div>
       <CurrentAccount className="account" />
       <Button type="primary" className="btn" onClick={gotoDeBankRabbyBadge}>
-        <span>View on DeBank</span>
+        <span>{t('page.dashboard.rabbyBadge.viewOnDebank')}</span>
         <img src={ImgLink} className="ml-4 w-20 h-20" />
       </Button>
       <div className="confetti">
@@ -447,6 +488,7 @@ export const ClaimRabbyBadgeModal = ({
 }) => {
   return (
     <StyledModal
+      className="modal-support-darkmode"
       visible={visible}
       title={null}
       onCancel={onCancel}

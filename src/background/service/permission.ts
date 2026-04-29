@@ -1,9 +1,11 @@
-import { SIGN_PERMISSION_TYPES } from './../../constant/index';
+import { CHAINS, SIGN_PERMISSION_TYPES } from './../../constant/index';
 import LRU from 'lru-cache';
 import { createPersistStore } from 'background/utils';
 import { CHAINS_ENUM, INTERNAL_REQUEST_ORIGIN } from 'consts';
 import { max } from 'lodash';
-import { findChainByEnum } from '@/utils/chain';
+import { findChain, findChainByEnum } from '@/utils/chain';
+import { BasicDappInfo } from './openapi';
+import { Account } from './preference';
 
 export interface ConnectedSite {
   origin: string;
@@ -15,8 +17,19 @@ export interface ConnectedSite {
   isTop: boolean;
   order?: number;
   isConnected: boolean;
+  /**
+   * @deprecated
+   */
   preferMetamask?: boolean;
-  signPermission?: SIGN_PERMISSION_TYPES;
+  isFavorite?: boolean;
+  info?: BasicDappInfo;
+  /**
+   * eip6963 rdns
+   */
+  rdns?: string;
+  isMetamaskMode?: boolean;
+
+  account?: Account | null;
 }
 
 export type PermissionStore = {
@@ -72,13 +85,20 @@ class PermissionService {
 
     if (!siteItem) return siteItem;
 
-    const chainItem = findChainByEnum(siteItem.chain);
+    const chainItem = findChain({ enum: siteItem.chain });
 
-    return chainItem ? siteItem : undefined;
+    return chainItem
+      ? siteItem
+      : {
+          ...siteItem,
+          chain: CHAINS_ENUM.ETH,
+          isConnected: false,
+        };
   };
 
-  getSite = (origin: string) => {
-    return this._getSite(origin);
+  getSite = (origin: string | number) => {
+    const _origin = origin.toString();
+    return this._getSite(_origin);
   };
 
   setSite = (site: ConnectedSite) => {
@@ -123,27 +143,30 @@ class PermissionService {
     name,
     icon,
     defaultChain,
+    defaultAccount,
     isSigned = false,
-    signPermission,
   }: {
     origin: string;
     name: string;
     icon: string;
     defaultChain: CHAINS_ENUM;
+    defaultAccount?: Account;
     isSigned?: boolean;
-    signPermission?: SIGN_PERMISSION_TYPES;
   }) => {
     if (!this.lruCache) return;
 
+    const site = this._getSite(origin);
+
     this.lruCache.set(origin, {
+      ...site,
       origin,
       name,
       icon,
-      chain: defaultChain,
       isSigned,
       isTop: false,
+      chain: defaultChain,
+      account: defaultAccount,
       isConnected: true,
-      signPermission,
     });
     this.sync();
   };
@@ -163,7 +186,7 @@ class PermissionService {
     if (!this.lruCache || !this.lruCache.has(origin)) return;
     if (origin === INTERNAL_REQUEST_ORIGIN) return;
 
-    if (value.chain && !findChainByEnum(value.chain)) {
+    if (value.chain && !findChain({ enum: value.chain })) {
       return;
     }
 
@@ -231,6 +254,12 @@ class PermissionService {
     );
   };
 
+  getMetamaskModeSites = () => {
+    return (this.lruCache?.values() || []).filter(
+      (item) => item.isMetamaskMode
+    );
+  };
+
   getConnectedSite = (key: string) => {
     const site = this._getSite(key);
     if (site && site.isConnected) {
@@ -251,6 +280,28 @@ class PermissionService {
     });
   };
 
+  favoriteWebsite = (origin: string, order?: number) => {
+    const site = this.getConnectedSite(origin);
+    if (!site || !this.lruCache) return;
+    order =
+      order ??
+      (max(this.getRecentConnectedSites().map((item) => item.order)) || 0) + 1;
+    this.updateConnectSite(origin, {
+      ...site,
+      order,
+      isFavorite: true,
+    });
+  };
+
+  unFavoriteWebsite = (origin: string) => {
+    const site = this.getConnectedSite(origin);
+    if (!site || !this.lruCache) return;
+    this.updateConnectSite(origin, {
+      ...site,
+      isFavorite: false,
+    });
+  };
+
   unpinConnectedSite = (origin: string) => {
     const site = this.getConnectedSite(origin);
     if (!site || !this.lruCache) return;
@@ -262,12 +313,13 @@ class PermissionService {
 
   removeConnectedSite = (origin: string) => {
     if (!this.lruCache) return;
-    const site = this.getConnectedSite(origin);
+    const site = this.getSite(origin);
     if (!site) {
       return;
     }
     this.setSite({
       ...site,
+      rdns: undefined,
       isConnected: false,
     });
     this.sync();

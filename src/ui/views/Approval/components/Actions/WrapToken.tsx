@@ -1,18 +1,23 @@
 import React, { useMemo, useEffect } from 'react';
 import styled from 'styled-components';
+import { useTranslation } from 'react-i18next';
 import { Result } from '@rabby-wallet/rabby-security-engine';
 import { Table, Col, Row } from './components/Table';
 import LogoWithText from './components/LogoWithText';
 import * as Values from './components/Values';
-import { ParsedActionData, WrapTokenRequireData } from './utils';
+import {
+  WrapTokenRequireData,
+  ParsedTransactionActionData,
+} from '@rabby-wallet/rabby-action';
 import { formatAmount } from 'ui/utils/number';
-import { ellipsisTokenSymbol, getTokenSymbol } from 'ui/utils/token';
 import { Chain } from 'background/service/openapi';
 import { useRabbyDispatch, useRabbySelector } from '@/ui/store';
 import ViewMore from './components/ViewMore';
 import SecurityLevelTagNoText from '../SecurityEngine/SecurityLevelTagNoText';
 import { SecurityListItem } from './components/SecurityListItem';
 import { isSameAddress } from '@/ui/utils';
+import { SubCol, SubRow, SubTable } from './components/SubTable';
+import { ProtocolListItem } from './components/ProtocolListItem';
 
 const Wrapper = styled.div`
   .header {
@@ -39,7 +44,7 @@ const WrapToken = ({
   chain,
   engineResults,
 }: {
-  data: ParsedActionData['wrapToken'];
+  data: ParsedTransactionActionData['wrapToken'];
   requireData: WrapTokenRequireData;
   chain: Chain;
   engineResults: Result[];
@@ -54,6 +59,7 @@ const WrapToken = ({
     })
   );
   const dispatch = useRabbyDispatch();
+  const { t } = useTranslation();
 
   const isInWhitelist = useMemo(() => {
     return contractWhitelist.some(
@@ -71,6 +77,10 @@ const WrapToken = ({
     return map;
   }, [engineResults]);
 
+  const hasReceiver = useMemo(() => {
+    return !isSameAddress(receiver, requireData.sender);
+  }, [requireData, receiver]);
+
   const handleClickRule = (id: string) => {
     const rule = rules.find((item) => item.id === id);
     if (!rule) return;
@@ -82,16 +92,13 @@ const WrapToken = ({
       ignored: processedRules.includes(id),
     });
   };
-
-  useEffect(() => {
-    dispatch.securityEngine.init();
-  }, []);
+  const hasRequiredData = requireData && Object.keys(requireData).length > 0;
 
   return (
     <Wrapper>
       <Table>
         <Col>
-          <Row isTitle>Pay</Row>
+          <Row isTitle>{t('page.signTx.swap.payToken')}</Row>
           <Row>
             <LogoWithText
               logo={payToken.logo_url}
@@ -106,7 +113,7 @@ const WrapToken = ({
           </Row>
         </Col>
         <Col>
-          <Row isTitle>Receive</Row>
+          <Row isTitle>{t('page.signTx.swap.receiveToken')}</Row>
           <Row>
             <LogoWithText
               logo={receiveToken.logo_url}
@@ -131,66 +138,108 @@ const WrapToken = ({
             )}
           </Row>
         </Col>
-        {engineResultMap['1092'] && (
-          <Col>
-            <Row isTitle>Receiver</Row>
-            <Row>
-              <Values.Address address={receiver} chain={chain} />
-              <ul className="desc-list">
-                <SecurityListItem
-                  engineResult={engineResultMap['1092']}
-                  id="1092"
-                  dangerText="Not the payment address"
+        {hasReceiver && (
+          <>
+            <Col>
+              <Row isTitle>{t('page.signTx.swap.receiver')}</Row>
+              <Row>
+                <Values.AddressWithCopy
+                  id="wrap-token-receiver"
+                  address={receiver}
+                  chain={chain}
                 />
-              </ul>
-            </Row>
-          </Col>
-        )}
-        <Col>
-          <Row isTitle>Interact contract</Row>
-          <Row>
-            <div>
-              <Values.Address address={requireData.id} chain={chain} />
-            </div>
-            <ul className="desc-list">
-              {requireData.protocol && (
-                <li>
-                  <Values.Protocol value={requireData.protocol} />
-                </li>
+              </Row>
+            </Col>
+
+            <SubTable target="wrap-token-receiver">
+              <SecurityListItem
+                engineResult={engineResultMap['1092']}
+                id="1092"
+                warningText={t('page.signTx.swap.unknownAddress')}
+              />
+              {!engineResultMap['1092'] && (
+                <>
+                  <SubCol>
+                    <SubRow isTitle>{t('page.signTx.address')}</SubRow>
+                    <SubRow>
+                      <Values.AccountAlias address={receiver} />
+                    </SubRow>
+                  </SubCol>
+                  <SubCol>
+                    <SubRow isTitle>{t('page.addressDetail.source')}</SubRow>
+                    <SubRow>
+                      <Values.KnownAddress address={receiver} />
+                    </SubRow>
+                  </SubCol>
+                </>
               )}
-              <li>
-                <Values.Interacted value={requireData.hasInteraction} />
-              </li>
-
-              {isInWhitelist && <li>Marked as trusted</li>}
-
-              <SecurityListItem
-                id="1135"
-                engineResult={engineResultMap['1135']}
-                forbiddenText="Marked as blocked"
-              />
-
-              <SecurityListItem
-                id="1137"
-                engineResult={engineResultMap['1137']}
-                warningText="Marked as blocked"
-              />
-              <li>
+            </SubTable>
+          </>
+        )}
+        {hasRequiredData && (
+          <>
+            <Col>
+              <Row isTitle itemsCenter>
+                {t('page.signTx.interactContract')}
+              </Row>
+              <Row>
                 <ViewMore
                   type="contract"
                   data={{
-                    hasInteraction: requireData.hasInteraction,
                     bornAt: requireData.bornAt,
                     protocol: requireData.protocol,
                     rank: requireData.rank,
                     address: requireData.id,
+                    hasInteraction: requireData.hasInteraction,
                     chain,
                   }}
-                />
-              </li>
-            </ul>
-          </Row>
-        </Col>
+                >
+                  <Values.Address
+                    id="wrap-token-address"
+                    hasHover
+                    address={requireData.id}
+                    chain={chain}
+                  />
+                </ViewMore>
+              </Row>
+            </Col>
+            <SubTable target="wrap-token-address">
+              <SubCol>
+                <SubRow isTitle>{t('page.signTx.protocol')}</SubRow>
+                <SubRow>
+                  <ProtocolListItem protocol={requireData.protocol} />
+                </SubRow>
+              </SubCol>
+              <SubCol>
+                <SubRow isTitle>{t('page.signTx.hasInteraction')}</SubRow>
+                <SubRow>
+                  <Values.Interacted value={requireData.hasInteraction} />
+                </SubRow>
+              </SubCol>
+
+              {isInWhitelist && (
+                <SubCol>
+                  <SubRow isTitle>{t('page.signTx.myMark')}</SubRow>
+                  <SubRow>{t('page.signTx.trusted')}</SubRow>
+                </SubCol>
+              )}
+
+              <SecurityListItem
+                title={t('page.signTx.myMark')}
+                id="1135"
+                engineResult={engineResultMap['1135']}
+                forbiddenText={t('page.signTx.markAsBlock')}
+              />
+
+              <SecurityListItem
+                title={t('page.signTx.myMark')}
+                id="1137"
+                engineResult={engineResultMap['1137']}
+                warningText={t('page.signTx.markAsBlock')}
+              />
+            </SubTable>
+          </>
+        )}
       </Table>
     </Wrapper>
   );

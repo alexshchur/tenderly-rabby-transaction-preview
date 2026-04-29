@@ -1,24 +1,31 @@
 import { createModel } from '@rematch/core';
 import { RootModel } from '.';
 import { ChainGas } from 'background/service/preference';
-import { CHAINS_ENUM } from 'consts';
+import { CHAINS_ENUM, DEX } from 'consts';
 import { SwapServiceStore } from '@/background/service/swap';
 import { DEX_ENUM } from '@rabby-wallet/rabby-swap';
+import { TokenItem } from '@rabby-wallet/rabby-api/dist/types';
 
 export const swap = createModel<RootModel>()({
   name: 'swap',
 
   state: {
+    slippage: '0.1',
+    autoSlippage: true,
+    supportedDEXList: Object.keys(DEX),
     selectedDex: null,
     selectedChain: null,
     gasPriceCache: {},
     unlimitedAllowance: false,
     viewList: {},
     tradeList: {},
-
+    sortIncludeGasFee: false,
+    preferMEVGuarded: false,
     $$initialSelectedChain: null,
+    recentToTokens: [] as TokenItem[],
   } as Partial<SwapServiceStore> & {
     $$initialSelectedChain: CHAINS_ENUM | null;
+    supportedDEXList: string[];
   },
 
   reducers: {
@@ -37,7 +44,7 @@ export const swap = createModel<RootModel>()({
     init() {
       return this.syncState();
     },
-    async syncState(key?: keyof SwapServiceStore, store?) {
+    async syncState(key: keyof SwapServiceStore | undefined, store) {
       const data = await store.app.wallet.getSwap(key);
 
       this.setField(
@@ -56,6 +63,8 @@ export const swap = createModel<RootModel>()({
             (data as SwapServiceStore).selectedChain || null,
         });
       }
+
+      await this.getSwapSupportedDEXList();
     },
 
     async getSwapGasCache(chain: CHAINS_ENUM, store) {
@@ -90,6 +99,26 @@ export const swap = createModel<RootModel>()({
         selectedChain,
       });
     },
+
+    async setSelectedFromToken(
+      selectedFromToken: TokenItem | undefined,
+      store
+    ) {
+      await store.app.wallet.setSelectedFromToken(selectedFromToken);
+
+      this.setField({
+        selectedFromToken,
+      });
+    },
+
+    async setSelectedToToken(selectedToToken: TokenItem | undefined, store) {
+      await store.app.wallet.setSelectedToToken(selectedToToken);
+
+      this.setField({
+        selectedToToken,
+      });
+    },
+
     async setUnlimitedAllowance(unlimitedAllowance: boolean, store) {
       await store.app.wallet.setUnlimitedAllowance(unlimitedAllowance);
 
@@ -98,7 +127,7 @@ export const swap = createModel<RootModel>()({
       });
     },
 
-    async getSwapViewList(_?, store?) {
+    async getSwapViewList(_: void, store) {
       const viewList = await store.app.wallet.getSwapViewList();
       this.setField({
         viewList,
@@ -106,7 +135,7 @@ export const swap = createModel<RootModel>()({
       return viewList;
     },
 
-    async getSwapTradeList(_?, store?) {
+    async getSwapTradeList(_: void, store) {
       const tradeList = await store.app.wallet.getSwapTradeList();
       this.setField({
         tradeList,
@@ -134,6 +163,61 @@ export const swap = createModel<RootModel>()({
         unlimitedAllowance[1]
       );
       this.getSwapTradeList();
+    },
+    async getSwapSortIncludeGasFee(_: void, store) {
+      const sortIncludeGasFee = await store.app.wallet.getSwapSortIncludeGasFee();
+      this.setField({
+        sortIncludeGasFee,
+      });
+    },
+
+    async setSwapSortIncludeGasFee(bool: boolean, store) {
+      await store.app.wallet.setSwapSortIncludeGasFee(bool);
+      this.getSwapSortIncludeGasFee();
+    },
+
+    async getSwapPreferMEV(_: void, store) {
+      const preferMEVGuarded = await store.app.wallet.getSwapPreferMEVGuarded();
+      this.setField({
+        preferMEVGuarded,
+      });
+    },
+
+    async setSwapPreferMEV(bool: boolean, store) {
+      await store.app.wallet.setSwapPreferMEVGuarded(bool);
+      this.getSwapPreferMEV();
+    },
+
+    async getSwapSupportedDEXList(_: void, store) {
+      const data = await store.app.wallet.openapi.getSupportedDEXList();
+      if (data.dex_list) {
+        this.setField({
+          supportedDEXList: data.dex_list?.filter((item) =>
+            Object.keys(DEX).includes(item)
+          ),
+        });
+      }
+    },
+
+    async setAutoSlippage(autoSlippage: boolean, store) {
+      await store.app.wallet.setAutoSlippage(autoSlippage);
+      this.setField({ autoSlippage });
+    },
+
+    async setIsCustomSlippage(isCustomSlippage: boolean, store) {
+      await store.app.wallet.setIsCustomSlippage(isCustomSlippage);
+      this.setField({ isCustomSlippage });
+    },
+
+    async setSlippage(slippage: string, store) {
+      await store.app.wallet.setSlippage(slippage);
+      this.setField({ slippage });
+    },
+
+    async setRecentSwapToToken(token: TokenItem, store) {
+      await store.app.wallet.setRecentSwapToToken(token);
+      const recentToTokens = await store.app.wallet.getRecentSwapToTokens();
+      this.setField({ recentToTokens });
     },
   }),
 });

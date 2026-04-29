@@ -1,32 +1,35 @@
 import { TokenWithChain } from '@/ui/component';
 import React from 'react';
 import styled from 'styled-components';
-import { ReactComponent as IconRcArrowDownTriangle } from '@/ui/assets/swap/arrow-caret-down.svg';
 import { TokenItem } from '@rabby-wallet/rabby-api/dist/types';
 import { getTokenSymbol } from '@/ui/utils/token';
+import { useTranslation } from 'react-i18next';
+import { ReactComponent as RcImgArrowDownCC } from '@/ui/assets/swap/arrow-down-cc.svg';
+
 const TokenRenderWrapper = styled.div`
-  width: 150px;
-  height: 46px;
-  background: #f5f6fa;
-  border-radius: 4px;
+  width: auto;
+  height: 40px;
+  background: var(--r-neutral-card2, #f2f4f7);
+  border-radius: 8px;
   display: flex;
   align-items: center;
-  padding: 12px;
+  padding: 8px 12px;
   font-weight: 500;
   font-size: 18px;
   color: #13141a;
   border: 1px solid transparent;
   cursor: pointer;
   &:hover {
-    background: rgba(134, 151, 255, 0.2);
+    background: var(--r-blue-light2, #eef1ff);
   }
   .token {
     display: flex;
     flex: 1;
-    gap: 8px;
+    gap: 6px;
     align-items: center;
 
     .text {
+      color: var(--r-neutral-title-1, #f7fafc);
       max-width: 68px;
       display: inline-block;
       white-space: nowrap;
@@ -35,7 +38,9 @@ const TokenRenderWrapper = styled.div`
     }
   }
   .select {
+    color: var(--r-neutral-title-1, #f7fafc);
     flex: 1;
+    gap: 6px;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -52,10 +57,14 @@ const TokenRenderWrapper = styled.div`
 export const TokenRender = ({
   openTokenModal,
   token,
+  type = 'swap',
 }: {
   token?: TokenItem | undefined;
   openTokenModal: () => void;
+  type?: 'swap' | 'bridge';
 }) => {
+  const { t } = useTranslation();
+
   return (
     <TokenRenderWrapper onClick={openTokenModal}>
       {token ? (
@@ -70,12 +79,18 @@ export const TokenRender = ({
           <span className="text" title={getTokenSymbol(token)}>
             {getTokenSymbol(token)}
           </span>
-          <IconRcArrowDownTriangle viewBox="0 0 24 24" className="arrow" />
+          <RcImgArrowDownCC
+            viewBox="0 0 16 16"
+            className="arrow text-r-neutral-body w-16 h-16"
+          />
         </div>
       ) : (
         <div className="select">
-          <span>Select Token</span>
-          <IconRcArrowDownTriangle viewBox="0 0 24 24" className="arrow" />
+          <span>{t('page.swap.select-token')}</span>
+          <RcImgArrowDownCC
+            viewBox="0 0 16 16"
+            className="arrow text-r-neutral-body w-16 h-16"
+          />
         </div>
       )}
     </TokenRenderWrapper>

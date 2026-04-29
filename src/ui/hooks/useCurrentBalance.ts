@@ -1,159 +1,176 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useWallet, useWalletRequest } from 'ui/utils';
 
-import type { ChainWithBalance } from 'background/service/openapi';
+import { findChainByServerID, DisplayChainWithWhiteLogo } from '@/utils/chain';
+import { filterChainWithBalance, normalizeChainList } from '@/utils/account';
+import { useRabbyDispatch, useRabbySelector } from '../store';
+import { useRequest } from 'ahooks';
 
-import { CHAINS } from 'consts';
-
-export interface DisplayChainWithWhiteLogo extends ChainWithBalance {
-  logo?: string;
-  whiteLogo?: string;
-}
-
-const formatChain = (item: ChainWithBalance): DisplayChainWithWhiteLogo => {
-  const chainsArray = Object.values(CHAINS);
-  const chain = chainsArray.find((chain) => chain.id === item.community_id);
-
-  return {
-    ...item,
-    logo: chain?.logo || item.logo_url,
-    whiteLogo: chain?.whiteLogo,
-  };
-};
+/** @deprecated import from '@/utils/chain' directly  */
+export type { DisplayChainWithWhiteLogo };
 
 export default function useCurrentBalance(
   account: string | undefined,
-  update = false,
-  noNeedBalance = false,
-  nonce = 0,
-  includeTestnet = false
+  opts?: {
+    noNeedBalance?: boolean;
+    update?: boolean;
+    /**
+     * @description in the future, only nonce >= 0, the fetching will be triggered
+     */
+    nonce?: number;
+    initBalanceFromLocalCache?: boolean;
+  }
 ) {
+  const {
+    update = false,
+    noNeedBalance = false,
+    nonce = 0,
+    initBalanceFromLocalCache = false,
+  } = opts || {};
+
   const wallet = useWallet();
+  const [evmBalance, setEvmBalance] = useState<number | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
-  const [testnetBalance, setTestnetBalance] = useState<number | null>(null);
   const [success, setSuccess] = useState(true);
-  const [testnetSuccess, setTestnetSuccess] = useState(true);
   const [balanceLoading, setBalanceLoading] = useState(false);
-  const [testnetBalanceLoading, setTestnetBalanceLoading] = useState(false);
-  const [balanceFromCache, setBalanceFromCache] = useState(false);
-  const [testnetBalanceFromCache, setTestnetBalanceFromCache] = useState(false);
+  const [balanceFromCache, setBalanceFromCache] = useState(
+    initBalanceFromLocalCache
+  );
   let isCanceled = false;
   const [matteredChainBalances, setChainBalances] = useState<
     DisplayChainWithWhiteLogo[]
   >([]);
-  const [testnetMatteredChainBalances, setTestnetChainBalances] = useState<
-    DisplayChainWithWhiteLogo[]
-  >([]);
-  const [hasValueChainBalances, setHasValueChainBalances] = useState<
-    DisplayChainWithWhiteLogo[]
-  >([]);
-  const [
-    hasTestnetValueChainBalances,
-    setHasTestnetValueChainBalances,
-  ] = useState<DisplayChainWithWhiteLogo[]>([]);
+  const [appChainIds, setAppChainIds] = useState<string[]>([]);
+  const [missingList, setMissingList] = useState<string[]>();
 
-  const [getAddressBalance] = useWalletRequest(wallet.getAddressBalance, {
-    onSuccess({ total_usd_value, chain_list }) {
-      if (isCanceled) return;
-      setBalance(total_usd_value);
-      setSuccess(true);
-      const chanList = chain_list
-        .filter((item) => item.born_at !== null)
-        .map(formatChain);
-      setChainBalances(chanList);
-      setHasValueChainBalances(chanList.filter((item) => item.usd_value > 0));
-      setBalanceLoading(false);
-      setBalanceFromCache(false);
-    },
-    onError() {
-      setSuccess(false);
-      setBalanceLoading(false);
-    },
-  });
+  const dispatch = useRabbyDispatch();
 
-  const [getTestnetBalance] = useWalletRequest(wallet.getAddressBalance, {
-    onSuccess({ total_usd_value, chain_list }) {
-      if (isCanceled) return;
-      setTestnetBalance(total_usd_value);
-      setTestnetSuccess(true);
-      const chanList = chain_list
-        .filter((item) => item.born_at !== null)
-        .map(formatChain);
-      setTestnetChainBalances(chanList);
-      setHasTestnetValueChainBalances(
-        chanList.filter((item) => item.usd_value > 0)
-      );
-      setTestnetBalanceLoading(false);
-      setTestnetBalanceFromCache(false);
-    },
-    onError() {
-      setTestnetSuccess(false);
-      setTestnetBalanceLoading(false);
-    },
-  });
+  const { runAsync: getInMemoryAddressBalance } = useRequest(
+    wallet.getInMemoryAddressBalance,
+    {
+      onSuccess(options) {
+        const { total_usd_value, chain_list } = options;
+        const evmUsdValue =
+          'evmUsdValue' in options ? (options.evmUsdValue as number) : 0;
+        const chainIds =
+          'appChainIds' in options ? (options.appChainIds as string[]) : [];
+        if (isCanceled) return;
+        setAppChainIds(chainIds);
+        setEvmBalance(evmUsdValue);
+        setBalance(total_usd_value);
+        setSuccess(true);
+        const chainList = normalizeChainList(chain_list);
+
+        dispatch.accountToDisplay.getAllAccountsToDisplay();
+
+        setChainBalances(chainList);
+        setBalanceLoading(false);
+        setBalanceFromCache(false);
+      },
+      onError(e) {
+        setBalanceLoading(false);
+        try {
+          const { error_code, err_chain_ids } = JSON.parse(e.message);
+          if (error_code === 2) {
+            const chainNames = err_chain_ids.map((serverId: string) => {
+              const chain = findChainByServerID(serverId);
+              return chain?.name;
+            });
+            setMissingList(chainNames);
+            setSuccess(true);
+            return;
+          }
+        } catch (e) {
+          console.error(e);
+        }
+        setSuccess(false);
+      },
+      manual: true,
+    }
+  );
 
   const getCurrentBalance = async (force = false) => {
     if (!account || noNeedBalance) return;
     setBalanceLoading(true);
     const cacheData = await wallet.getAddressCacheBalance(account);
+    const cacheExpired = cacheData
+      ? await wallet.isBalanceDbCacheExpired(account)
+      : true;
+    const apiLevel = await wallet.getAPIConfig([], 'ApiLevel', false);
     if (cacheData) {
       setBalanceFromCache(true);
       setBalance(cacheData.total_usd_value);
+      setEvmBalance(cacheData.evmUsdValue || 0);
+      setAppChainIds(cacheData.appChainIds || []);
+      const chainList = normalizeChainList(cacheData.chain_list);
+      setChainBalances(chainList);
+
       if (update) {
-        setBalanceLoading(true);
-        getAddressBalance(account.toLowerCase(), force);
-        if (includeTestnet) {
-          getTestnetBalance(account.toLowerCase(), force, true);
+        if (apiLevel < 2 && (force || cacheExpired)) {
+          setBalanceLoading(true);
+          await getInMemoryAddressBalance(account, force);
+        } else {
+          setBalanceLoading(false);
         }
       } else {
         setBalanceLoading(false);
       }
     } else {
-      getAddressBalance(account.toLowerCase(), force);
-      if (includeTestnet) {
-        getTestnetBalance(account.toLowerCase(), force, true);
+      if (apiLevel < 2) {
+        await getInMemoryAddressBalance(account, force);
+        setBalanceLoading(false);
+        setBalanceFromCache(false);
+      } else {
+        setBalanceLoading(false);
       }
-      setBalanceLoading(false);
-      setBalanceFromCache(false);
     }
   };
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     await getCurrentBalance(true);
-  };
+  }, [getCurrentBalance]);
+
+  const isCurrentBalanceExpired = useCallback(async () => {
+    if (!account) return false;
+
+    try {
+      return wallet.isBalanceDbCacheExpired(account.toLowerCase());
+    } catch (error) {
+      return false;
+    }
+  }, [account]);
 
   useEffect(() => {
+    if (nonce < 0) return;
+
     getCurrentBalance();
     if (!noNeedBalance) {
       wallet.getAddressCacheBalance(account).then((cache) => {
-        setChainBalances(
-          cache
-            ? cache.chain_list
-                .filter((item) => item.born_at !== null)
-                .map(formatChain)
-            : []
-        );
+        setChainBalances(cache ? normalizeChainList(cache?.chain_list) : []);
       });
     }
     return () => {
       isCanceled = true;
     };
   }, [account, nonce]);
-  return [
+
+  const chainBalancesWithValue = useMemo(() => {
+    return filterChainWithBalance(matteredChainBalances);
+  }, [matteredChainBalances]);
+
+  return {
     balance,
+    evmBalance,
+    appChainIds,
     matteredChainBalances,
-    getAddressBalance,
+    chainBalancesWithValue,
+    isCurrentBalanceExpired,
+    // getInMemoryAddressBalance,
     success,
     balanceLoading,
     balanceFromCache,
-    refresh,
-    hasValueChainBalances,
-    testnetBalance,
-    testnetMatteredChainBalances,
-    getTestnetBalance,
-    testnetSuccess,
-    testnetBalanceLoading,
-    testnetBalanceFromCache,
-    hasTestnetValueChainBalances,
-  ] as const;
+    refreshBalance: refresh,
+    fetchBalance: getCurrentBalance,
+    missingList,
+  };
 }

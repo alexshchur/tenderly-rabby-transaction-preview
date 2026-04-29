@@ -11,8 +11,10 @@ import { AddressBackup } from './AddressBackup';
 import { AddressDelete } from './AddressDelete';
 import { AddressInfo } from './AddressInfo';
 import './style.less';
+import clsx from 'clsx';
+import { usePopupContainer } from '@/ui/hooks/usePopupContainer';
 
-const AddressDetail = () => {
+const AddressDetail: React.FC<{ isInModal?: boolean }> = ({ isInModal }) => {
   const { t } = useTranslation();
   const { search } = useLocation();
   const dispatch = useRabbyDispatch();
@@ -27,31 +29,41 @@ const AddressDetail = () => {
     byImport?: string;
   };
 
+  const { getContainer } = usePopupContainer();
+
   const { address, type, brandName, byImport } = qs || {};
+
   const source = useAddressSource({
     type,
     brandName,
     byImport: !!byImport,
+    address,
   });
 
   useEffect(() => {
     dispatch.whitelist.getWhitelist();
   }, []);
 
-  const handleWhitelistChange = (checked: boolean) => {
+  const handleWhitelistChange = async (checked: boolean) => {
+    if (!checked) {
+      await wallet.removeWhitelist(address);
+      const cexId = await wallet.getCexId(address);
+      if (cexId) {
+        await wallet.updateCexId(address, '');
+      }
+      return;
+    }
     AuthenticationModalPromise({
-      title: checked ? 'Add to Whitelist' : 'Remove from Whitelist',
-      cancelText: 'Cancel',
+      title: t('page.addressDetail.add-to-whitelist'),
+      cancelText: t('global.Cancel'),
       wallet,
+      containerClassName: 'whitelist-confirm-modal',
+      getContainer,
       validationHandler: async (password) => {
-        if (checked) {
-          await wallet.addWhitelist(password, address);
-        } else {
-          await wallet.removeWhitelist(password, address);
-        }
+        await wallet.addWhitelist(password, address);
       },
       onFinished() {
-        dispatch.whitelist.getWhitelist();
+        // dispatch.whitelist.getWhitelist();
       },
       onCancel() {
         // do nothing
@@ -64,8 +76,19 @@ const AddressDetail = () => {
   }
 
   return (
-    <div className="page-address-detail overflow-auto">
-      <PageHeader fixed>{t('Address Detail')}</PageHeader>
+    <div
+      className={clsx(
+        'page-address-detail overflow-auto',
+        isInModal ? 'min-h-0 h-[600px]' : ''
+      )}
+    >
+      <PageHeader
+        wrapperClassName="bg-r-neutral-bg-2"
+        fixed
+        canBack={!isInModal}
+      >
+        {t('page.addressDetail.address-detail')}
+      </PageHeader>
       <AddressInfo
         address={address}
         type={type}
@@ -76,7 +99,9 @@ const AddressDetail = () => {
       <div className="rabby-list">
         <div className="rabby-list-item">
           <div className="rabby-list-item-content">
-            <div className="rabby-list-item-label">Add to Whitelist</div>
+            <div className="rabby-list-item-label">
+              {t('page.addressDetail.add-to-whitelist')}
+            </div>
             <Switch
               checked={!!whitelist.find((item) => isSameAddress(item, address))}
               onChange={handleWhitelistChange}

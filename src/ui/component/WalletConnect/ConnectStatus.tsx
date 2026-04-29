@@ -8,6 +8,7 @@ import { useSessionStatus } from './useSessionStatus';
 import { Account } from '@/background/service/preference';
 import { useDisplayBrandName } from './useDisplayBrandName';
 import { useBrandNameHasWallet } from './useBrandNameHasWallet';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   brandName?: string;
@@ -19,6 +20,7 @@ export const ConnectStatus: React.FC<Props> = ({ brandName, account }) => {
   const [displayBrandName] = useDisplayBrandName(brandName);
   const hasWallet = useBrandNameHasWallet(displayBrandName);
   const IconClassName = 'inline-block mr-[6px] w-[14px] h-[14px] mb-2';
+  const { t } = useTranslation();
 
   const statusText = React.useMemo(() => {
     switch (status) {
@@ -26,7 +28,7 @@ export const ConnectStatus: React.FC<Props> = ({ brandName, account }) => {
         return (
           <div className="py-[15px]">
             <img src={TipSuccessSVG} className={IconClassName} />
-            Scan successful. Waiting to be confirmed
+            {t('page.newAddress.walletConnect.status.received')}
           </div>
         );
       case 'REJECTED':
@@ -34,7 +36,7 @@ export const ConnectStatus: React.FC<Props> = ({ brandName, account }) => {
         return (
           <div className="py-[15px]">
             <img src={TipInfoSVG} className={IconClassName} />
-            Connection canceled. Please scan the QR code to retry.
+            {t('page.newAddress.walletConnect.status.rejected')}
           </div>
         );
       case 'BRAND_NAME_ERROR':
@@ -42,9 +44,13 @@ export const ConnectStatus: React.FC<Props> = ({ brandName, account }) => {
           <div className="py-[8px]">
             <div>
               <img src={TipWarningSVG} className={IconClassName} />
-              Wrong wallet app.
+              {t('page.newAddress.walletConnect.status.brandError')}
             </div>
-            <div>Please use {displayBrandName} to connect</div>
+            <div>
+              {t('page.newAddress.walletConnect.status.brandErrorDesc', {
+                brandName: displayBrandName,
+              })}
+            </div>
           </div>
         );
       case 'ACCOUNT_ERROR':
@@ -52,24 +58,31 @@ export const ConnectStatus: React.FC<Props> = ({ brandName, account }) => {
           <div className="py-[8px]">
             <div>
               <img src={TipWarningSVG} className={IconClassName} />
-              Address not match.
+              {t('page.newAddress.walletConnect.status.accountError')}
             </div>
-            <div>Please switch address in your mobile wallet</div>
+            <div>
+              {t('page.newAddress.walletConnect.status.accountErrorDesc')}
+            </div>
           </div>
         );
       case 'CONNECTED':
-        return <div className="py-[15px]">Connected</div>;
+        return (
+          <div className="py-[15px]">
+            {t('page.newAddress.walletConnect.status.connected')}
+          </div>
+        );
       case 'ADDRESS_DUPLICATE':
         return (
           <div className="py-[15px]">
-            The address you're are trying to import is duplicate
+            {t('page.newAddress.walletConnect.status.duplicate')}
           </div>
         );
       default:
         return (
           <div className="py-[15px]">
-            Scan with your {displayBrandName}
-            {hasWallet ? '' : ' wallet'}
+            {t('page.newAddress.walletConnect.status.default', {
+              brand: `${displayBrandName}${hasWallet ? '' : ' wallet'}`,
+            })}
           </div>
         );
     }
@@ -99,9 +112,10 @@ export const ConnectStatus: React.FC<Props> = ({ brandName, account }) => {
         'w-[360px] text-center leading-none',
         'text-13',
         {
-          'bg-[#E5E9EF] text-[#4B4D59] font-medium': !type || type === 'info',
-          'bg-[#27C1930D] text-[#27C193]': type === 'success',
-          'bg-[#FFB0200D] text-[#FFB020]': type === 'warning',
+          'bg-r-neutral-line text-r-neutral-title-1 font-medium':
+            !type || type === 'info',
+          'bg-r-green-light text-r-green-default': type === 'success',
+          'bg-r-orange-light text-r-orange-default': type === 'warning',
         }
       )}
     >

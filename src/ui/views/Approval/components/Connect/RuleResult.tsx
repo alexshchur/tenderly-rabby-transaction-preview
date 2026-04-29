@@ -1,28 +1,33 @@
 import React, { useMemo } from 'react';
 import { Tooltip } from 'antd';
+import { useTranslation } from 'react-i18next';
 import { Result } from '@rabby-wallet/rabby-security-engine';
 import { Level } from '@rabby-wallet/rabby-security-engine/dist/rules';
 import styled from 'styled-components';
 import SecurityLevelTag from '../SecurityEngine/SecurityLevelTagNoText';
 import IconEdit from 'ui/assets/editpen.svg';
+import clsx from 'clsx';
 
 const RuleResultWrapper = styled.div`
   display: flex;
   align-items: center;
   min-height: 56px;
-  padding: 15px 16px;
+  padding: 18px 16px;
   padding-right: 24px;
-  background: #f5f6fa;
-  border: 1px solid #e5e9ef;
-  border-radius: 8px;
-  margin-bottom: 8px;
+  border: none;
   position: relative;
+
+  &:has(.security-level-tag) {
+    .rule-value {
+      padding-right: 8px;
+    }
+  }
 
   .rule-desc {
     font-weight: 400;
     font-size: 13px;
     line-height: 15px;
-    color: #4b4d59;
+    color: var(--r-neutral-body, #3e495e);
     width: 49%;
   }
   .rule-value {
@@ -32,7 +37,7 @@ const RuleResultWrapper = styled.div`
     font-weight: 500;
     font-size: 15px;
     line-height: 18px;
-    color: #13141a;
+    color: var(--r-neutral-title-1, #192945);
   }
   .collect-list {
     display: flex;
@@ -58,6 +63,7 @@ const RuleResult = ({
   userListResult,
   onSelect,
   onEditUserList,
+  className,
 }: {
   rule: { id: string; desc: string; result: Result | null };
   collectList: { name: string; logo_url: string }[];
@@ -68,7 +74,9 @@ const RuleResult = ({
   userListResult?: Result;
   onSelect(rule: { id: string; desc: string; result: Result | null }): void;
   onEditUserList(): void;
+  className?: string;
 }) => {
+  const { t } = useTranslation();
   const handleClick = () => {
     if (!rule.result) return;
     onSelect({
@@ -100,13 +108,13 @@ const RuleResult = ({
 
   const ruleDesc = () => {
     if (rule.id === '1004') {
-      return <>Listed by</>;
+      return <>{t('page.connect.listedBy')}</>;
     }
     if (rule.id === '1005') {
-      return <>Site popularity</>;
+      return <>{t('page.connect.sitePopularity')}</>;
     }
     if (rule.id === '1006' || rule.id === '1007') {
-      return <>My mark</>;
+      return <>{t('page.connect.markRuleText')}</>;
     }
     if (rule.result) {
       if (
@@ -123,12 +131,21 @@ const RuleResult = ({
   };
 
   return (
-    <RuleResultWrapper>
-      <div className="rule-desc flex items-center">{ruleDesc()}</div>
+    <RuleResultWrapper
+      className={clsx(className, rule.id === '1004' ? 'items-start' : '')}
+    >
+      <div
+        className={clsx(
+          'rule-desc flex items-center',
+          rule.id === '1004' ? 'leading-[20px]' : ''
+        )}
+      >
+        {ruleDesc()}
+      </div>
       <div className="rule-value">
         {rule.id === '1004' && (
           <div className="collect-list">
-            {collectList.length <= 0 && 'None'}
+            {collectList.length <= 0 && t('page.connect.noWebsite')}
             {collectList.length > 0 &&
               collectList.slice(0, 10).map((item) => (
                 <div className="collect-list-item">
@@ -145,25 +162,41 @@ const RuleResult = ({
         )}
         {rule.id === '1005' && (
           <div>
-            {popularLevel === 'high' && 'High'}
-            {popularLevel === 'medium' && 'Medium'}
-            {popularLevel === 'low' && 'Low'}
-            {popularLevel === 'very_low' && 'Very Low'}
+            {popularLevel === 'high' && t('page.connect.popularLevelHigh')}
+            {popularLevel === 'medium' && t('page.connect.popularLevelMedium')}
+            {popularLevel === 'low' && t('page.connect.popularLevelLow')}
+            {popularLevel === 'very_low' &&
+              t('page.connect.popularLevelVeryLow')}
           </div>
         )}
         {['1001', '1002', '1003'].includes(rule.id) && rule.result && (
-          <div>{rule.result.value ? 'Yes' : 'No'}</div>
+          <div>
+            {rule.result.value
+              ? t('page.securityEngine.yes')
+              : t('page.securityEngine.no')}
+          </div>
         )}
         {(rule.id === '1006' || rule.id === '1007') && (
-          <div className="flex cursor-pointer" onClick={onEditUserList}>
-            {!userListResult && 'No mark'}
-            {userListResult && userListResult.id === '1006' && 'Blocked'}
-            {userListResult && userListResult.id === '1007' && 'Trusted'}
+          <div
+            className="flex cursor-pointer flex-1 justify-end items-center"
+            onClick={onEditUserList}
+          >
+            {!userListResult && t('page.connect.noMark')}
+            {userListResult &&
+              userListResult.id === '1006' &&
+              t('page.connect.blocked')}
+            {userListResult &&
+              userListResult.id === '1007' &&
+              t('page.connect.trusted')}
             <img src={IconEdit} className="ml-6 icon icon-edit" />
           </div>
         )}
         {rule.id === '1070' && rule.result && (
-          <div>{rule.result.value ? 'Yes' : 'No'}</div>
+          <div>
+            {rule.result.value
+              ? t('page.securityEngine.yes')
+              : t('page.securityEngine.no')}
+          </div>
         )}
       </div>
       {rule.result && !ignored && rule.result.enable && (

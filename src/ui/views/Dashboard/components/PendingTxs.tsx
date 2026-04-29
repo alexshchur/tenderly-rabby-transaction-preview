@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { useHistory } from 'react-router-dom';
 import IconPendingTx from 'ui/assets/dashboard/pending-tx.svg';
 import clsx from 'clsx';
+import { useTranslation } from 'react-i18next';
 
 const Wrapper = styled.div`
   position: absolute;
@@ -13,8 +14,8 @@ const Wrapper = styled.div`
   font-size: 13px;
   line-height: 15px;
   color: #fff;
-  top: 70px;
-  right: 20px;
+  top: 66px;
+  right: 28px;
   cursor: pointer;
   user-select: none;
 `;
@@ -41,31 +42,23 @@ const PendingTxs = ({ pendingTxCount }: Props) => {
   const handleClickPendingTxs = () => {
     history.push('/activities');
   };
-
+  const { t } = useTranslation();
+  const countStr = pendingTxCount > 99 ? '99+' : pendingTxCount.toString();
   return (
     <Wrapper
       className={clsx(
-        'group max-w-[62px] hover:max-w-[200px]',
         'transition-all ease-in-out',
         'whitespace-nowrap overflow-hidden overflow-ellipsis'
       )}
       onClick={handleClickPendingTxs}
     >
-      <div className="group-hover:hidden flex relative">
+      <div className="flex relative">
         <IconPendingTxElement
           className="w-[20px] h-[20px] mr-0"
           src={IconPendingTx}
         />
         <span className="absolute inset-0 leading-[20px] text-center">
           {pendingTxCount > 99 ? '99+' : pendingTxCount}
-        </span>
-      </div>
-      <div className="group-hover:flex hidden px-[10px] py-[2px]">
-        <IconPendingTxElement src={IconPendingTx} />
-        <span>
-          {`${pendingTxCount > 99 ? '99+' : pendingTxCount} Pending${
-            pendingTxCount > 1 ? 's' : ''
-          }`}
         </span>
       </div>
     </Wrapper>

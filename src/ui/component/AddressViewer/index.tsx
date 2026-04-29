@@ -1,6 +1,7 @@
 import React from 'react';
 import cx from 'clsx';
 import { SvgIconArrowDown } from 'ui/assets';
+import { ellipsis as ellipsisAddress } from 'ui/utils/address';
 import './style.less';
 
 interface AddressViewProps {
@@ -35,9 +36,7 @@ export default ({
       >
         {showIndex && index >= 0 && <div className="number-index">{index}</div>}
         {ellipsis
-          ? `${address
-              ?.toLowerCase()
-              .slice(0, 6)}...${address?.toLowerCase().slice(-4)}`
+          ? ellipsisAddress(address.toLowerCase())
           : address?.toLowerCase()}
       </div>
       {showArrow && (

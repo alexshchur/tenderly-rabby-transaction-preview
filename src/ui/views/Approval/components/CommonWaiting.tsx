@@ -1,5 +1,11 @@
 import React from 'react';
-import { useApproval, useCommonPopupView, useWallet } from 'ui/utils';
+import { useTranslation } from 'react-i18next';
+import {
+  openInternalPageInTab,
+  useApproval,
+  useCommonPopupView,
+  useWallet,
+} from 'ui/utils';
 import {
   CHAINS,
   EVENTS,
@@ -7,6 +13,7 @@ import {
   KEYRING_CATEGORY_MAP,
   WALLETCONNECT_STATUS_MAP,
   WALLET_BRAND_CONTENT,
+  WALLET_BRAND_TYPES,
 } from 'consts';
 import {
   ApprovalPopupContainer,
@@ -18,8 +25,14 @@ import eventBus from '@/eventBus';
 import { matomoRequestEvent } from '@/utils/matomo-request';
 import { adjustV } from '@/ui/utils/gnosis';
 import { message } from 'antd';
+import { findChain } from '@/utils/chain';
+import { emitSignComponentAmounted } from '@/utils/signEvent';
+import { ga4 } from '@/utils/ga4';
+import { useGetTxFailedResultInWaiting } from '@/ui/hooks/useMiniApprovalDirectSign';
 
 interface ApprovalParams {
+  from?: string;
+  nonce?: string;
   address: string;
   chainId?: number;
   isGnosis?: boolean;
@@ -28,20 +41,40 @@ interface ApprovalParams {
   $ctx?: any;
   extra?: Record<string, any>;
   type: string;
+  safeMessage?: {
+    safeMessageHash: string;
+    safeAddress: string;
+    message: string;
+    chainId: number;
+  };
+  stay?: boolean;
 }
 
-export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
+export const CommonWaiting = ({
+  params,
+  account: $account,
+}: {
+  params: ApprovalParams;
+  account: Account;
+}) => {
   const wallet = useWallet();
-  const { setTitle, setVisible, closePopup } = useCommonPopupView();
+  const {
+    setHeight,
+    setTitle,
+    setVisible,
+    closePopup,
+    setPopupProps,
+  } = useCommonPopupView();
   const [getApproval, resolveApproval, rejectApproval] = useApproval();
+  const { t } = useTranslation();
   const { type } = params;
   const { brandName } = Object.keys(HARDWARE_KEYRING_TYPES)
     .map((key) => HARDWARE_KEYRING_TYPES[key])
     .find((item) => item.type === type);
   const [errorMessage, setErrorMessage] = React.useState('');
-  const chain = Object.values(CHAINS).find(
-    (item) => item.id === (params.chainId || 1)
-  )!;
+  const chain = findChain({
+    id: params.chainId || 1,
+  });
   const [connectStatus, setConnectStatus] = React.useState(
     WALLETCONNECT_STATUS_MAP.WAITING
   );
@@ -58,10 +91,19 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
   const [description, setDescription] = React.useState('');
 
   const handleRetry = async () => {
-    const account = await wallet.syncGetCurrentAccount()!;
+    if (connectStatus === WALLETCONNECT_STATUS_MAP.SUBMITTING) {
+      message.success(t('page.signFooterBar.ledger.resubmited'));
+      return;
+    }
     setConnectStatus(WALLETCONNECT_STATUS_MAP.WAITING);
-    await wallet.requestKeyring(account?.type || '', 'resend', null);
-    message.success('Resent');
+
+    const autoRetryUpdate =
+      !!txFailedResult?.[1] && txFailedResult?.[1] !== 'origin';
+    await wallet.setRetryTxType(txFailedResult?.[1] || false);
+    await wallet.resendSign(autoRetryUpdate);
+
+    message.success(t('page.signFooterBar.ledger.resent'));
+    emitSignComponentAmounted();
   };
 
   const handleCancel = () => {
@@ -84,9 +126,7 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
   }, [brandName]);
 
   const init = async () => {
-    const account = params.isGnosis
-      ? params.account!
-      : (await wallet.syncGetCurrentAccount())!;
+    const account = params.isGnosis ? params.account! : $account;
     const approval = await getApproval();
 
     const isSignText = params.isGnosis
@@ -97,23 +137,26 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
       if (signingTxId) {
         const signingTx = await wallet.getSigningTx(signingTxId);
 
-        if (!signingTx?.explain) {
-          setErrorMessage('Failed to get explain');
+        if (!signingTx?.explain && chain && !chain?.isTestnet) {
+          setErrorMessage(t('page.signFooterBar.qrcode.failedToGetExplain'));
           return;
         }
 
-        const explain = signingTx.explain;
+        const explain = signingTx?.explain;
 
-        stats.report('signTransaction', {
+        wallet.reportStats('signTransaction', {
           type: account.brandName,
-          chainId: chain.serverId,
+          chainId: chain?.serverId || '',
           category: KEYRING_CATEGORY_MAP[account.type],
           preExecSuccess: explain
             ? explain?.calcSuccess && explain?.pre_exec.success
             : true,
-          createBy: params?.$ctx?.ga ? 'rabby' : 'dapp',
+          createdBy: params?.$ctx?.ga ? 'rabby' : 'dapp',
           source: params?.$ctx?.ga?.source || '',
           trigger: params?.$ctx?.ga?.trigger || '',
+          networkType: chain?.isTestnet
+            ? 'Custom Network'
+            : 'Integrated Network',
         });
       }
     } else {
@@ -126,56 +169,101 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
 
     eventBus.addEventListener(EVENTS.COMMON_HARDWARE.REJECTED, async (data) => {
       setErrorMessage(data);
-      setConnectStatus(WALLETCONNECT_STATUS_MAP.FAILD);
+      setConnectStatus(WALLETCONNECT_STATUS_MAP.FAILED);
     });
 
+    eventBus.addEventListener(
+      EVENTS.ONEKEY.REQUEST_PERMISSION_WEBUSB,
+      async () => {
+        openInternalPageInTab('request-permission?type=onekey&from=approval');
+      }
+    );
+
+    eventBus.addEventListener(EVENTS.TX_SUBMITTING, async () => {
+      setConnectStatus(WALLETCONNECT_STATUS_MAP.SUBMITTING);
+    });
     eventBus.addEventListener(EVENTS.SIGN_FINISHED, async (data) => {
+      console.log('finished', data);
       if (data.success) {
         let sig = data.data;
         setResult(sig);
-        setConnectStatus(WALLETCONNECT_STATUS_MAP.SIBMITTED);
+        setConnectStatus(WALLETCONNECT_STATUS_MAP.SUBMITTED);
         try {
           if (params.isGnosis) {
             sig = adjustV('eth_signTypedData', sig);
-            const sigs = await wallet.getGnosisTransactionSignatures();
-            if (sigs.length > 0) {
-              await wallet.gnosisAddConfirmation(account.address, data.data);
+            const safeMessage = params.safeMessage;
+            if (safeMessage) {
+              await wallet.handleGnosisMessage({
+                signature: data.data,
+                signerAddress: params.account!.address!,
+              });
             } else {
-              await wallet.gnosisAddSignature(account.address, data.data);
-              await wallet.postGnosisTransaction();
+              const sigs = await wallet.getGnosisTransactionSignatures();
+              if (sigs.length > 0) {
+                await wallet.gnosisAddConfirmation(account.address, data.data);
+              } else {
+                await wallet.gnosisAddSignature(account.address, data.data);
+                await wallet.postGnosisTransaction();
+              }
             }
           }
         } catch (e) {
-          setConnectStatus(WALLETCONNECT_STATUS_MAP.FAILD);
+          setConnectStatus(WALLETCONNECT_STATUS_MAP.FAILED);
           setErrorMessage(e.message);
           return;
         }
         matomoRequestEvent({
           category: 'Transaction',
           action: 'Submit',
-          label: brandName,
+          label: chain?.isTestnet ? 'Custom Network' : 'Integrated Network',
         });
+
+        ga4.fireEvent(`Submit_${chain?.isTestnet ? 'Custom' : 'Integrated'}`, {
+          event_category: 'Transaction',
+        });
+
         setSignFinishedData({
           data: sig,
           approvalId: approval.id,
         });
       } else {
-        setConnectStatus(WALLETCONNECT_STATUS_MAP.FAILD);
+        setConnectStatus(WALLETCONNECT_STATUS_MAP.FAILED);
+        setErrorMessage(data.errorMsg);
       }
     });
+
+    emitSignComponentAmounted();
   };
 
   React.useEffect(() => {
-    setTitle(`Sign with ${brandName}`);
-    init();
+    (async () => {
+      const account = params.isGnosis ? params.account! : $account;
+      setTitle(
+        <div className="flex justify-center items-center">
+          <img src={brandContent?.icon} className="w-20 mr-8" />
+          <span>
+            {t('page.signFooterBar.qrcode.signWith', {
+              brand: account.brandName,
+            })}
+          </span>
+        </div>
+      );
+      setHeight('fit-content');
+      init();
+    })();
   }, []);
 
+  React.useEffect(() => {
+    setPopupProps(params?.extra?.popupProps);
+  }, [params?.extra?.popupProps]);
+
+  const { stay = false } = params || {};
   React.useEffect(() => {
     if (signFinishedData && isClickDone) {
       closePopup();
       resolveApproval(
         signFinishedData.data,
-        false,
+        stay,
         false,
         signFinishedData.approvalId
       );
@@ -187,17 +275,22 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
     switch (connectStatus) {
       case WALLETCONNECT_STATUS_MAP.WAITING:
         setStatusProp('SENDING');
-        setContent('Sending signing request...');
+        setContent(t('page.signFooterBar.ledger.siging'));
         setDescription('');
         break;
-      case WALLETCONNECT_STATUS_MAP.FAILD:
+      case WALLETCONNECT_STATUS_MAP.SUBMITTING:
+        setStatusProp('SENDING');
+        setContent(t('page.signFooterBar.ledger.submitting'));
+        setDescription('');
+        break;
+      case WALLETCONNECT_STATUS_MAP.FAILED:
         setStatusProp('REJECTED');
-        setContent('Transaction rejected');
+        setContent(t('page.signFooterBar.qrcode.txFailed'));
         setDescription(errorMessage);
         break;
-      case WALLETCONNECT_STATUS_MAP.SIBMITTED:
+      case WALLETCONNECT_STATUS_MAP.SUBMITTED:
         setStatusProp('RESOLVED');
-        setContent('Signature completed');
+        setContent(t('page.signFooterBar.qrcode.sigCompleted'));
         setDescription('');
         break;
       default:
@@ -205,20 +298,55 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
     }
   }, [connectStatus, errorMessage]);
 
+  const hdType = React.useMemo(() => {
+    switch (brandContent?.brand) {
+      case WALLET_BRAND_TYPES.GRIDPLUS:
+        return 'wireless';
+
+      default:
+        return 'wired';
+    }
+  }, [brandContent?.brand]);
+
+  const { value: txFailedResult } = useGetTxFailedResultInWaiting({
+    nonce: params?.nonce,
+    chainId: params?.chainId,
+    from: params?.from,
+    status: connectStatus,
+    description: description,
+  });
+
+  React.useEffect(() => {
+    if (
+      [
+        WALLETCONNECT_STATUS_MAP.FAILED,
+        WALLETCONNECT_STATUS_MAP.REJECTED,
+      ].includes(connectStatus)
+    ) {
+      setContent(
+        txFailedResult?.[1]
+          ? t('page.signFooterBar.qrcode.txFailedRetry')
+          : t('page.signFooterBar.qrcode.txFailed')
+      );
+    }
+  }, [txFailedResult?.[1], connectStatus]);
+
   if (!brandContent) {
-    throw new Error(`${brandName} is not supported`);
+    throw new Error(t('page.signFooterBar.common.notSupport', [brandName]));
   }
 
   return (
     <ApprovalPopupContainer
-      brandUrl={brandContent.icon}
+      showAnimation
+      hdType={hdType}
       status={statusProp}
       onRetry={handleRetry}
       content={content}
-      description={description}
       onDone={() => setIsClickDone(true)}
       onCancel={handleCancel}
       hasMoreDescription={!!errorMessage}
+      description={txFailedResult?.[0] || description}
+      retryUpdateType={txFailedResult?.[1] ?? 'origin'}
     />
   );
 };

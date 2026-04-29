@@ -1,8 +1,10 @@
+import i18n from '@/i18n';
 import { Field, Popup } from '@/ui/component';
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import IconArrowRight from 'ui/assets/arrow-right-gray.svg';
 
-type DelectModalProps = {
+type DeleteModalProps = {
   visible: boolean;
   onClose(): void;
   onSubmit(deleteSeedPhrase: boolean): void;
@@ -11,11 +13,15 @@ type DelectModalProps = {
 
 const list = [
   {
-    title: 'Delete all addresses, but keep the seed phrase',
+    title: i18n.t(
+      'page.manageAddress.delete-all-addresses-but-keep-the-seed-phrase'
+    ),
     deleteSeedPhrase: false,
   },
   {
-    title: 'Delete all addresses and the seed phrase',
+    title: i18n.t(
+      'page.manageAddress.delete-all-addresses-and-the-seed-phrase'
+    ),
     deleteSeedPhrase: true,
   },
 ];
@@ -24,13 +30,15 @@ export const SeedPhraseDeleteModal = ({
   onClose,
   onSubmit,
   emptyAddress = false,
-}: DelectModalProps) => {
+}: DeleteModalProps) => {
+  const { t } = useTranslation();
   return (
     <Popup
       visible={visible}
-      title={'Delete seed phrase?'}
+      title={t('page.manageAddress.seed-phrase-delete-title')}
       height={emptyAddress ? 150 : 224}
       onClose={onClose}
+      isSupportDarkMode
     >
       <div className="flex flex-col ">
         {list.map((item, i) => {
@@ -45,7 +53,7 @@ export const SeedPhraseDeleteModal = ({
               onClick={() => {
                 onSubmit(item.deleteSeedPhrase);
               }}
-              className="bg-gray-bg2 border border-transparent hover:border-blue-light hover:bg-blue-light hover:bg-opacity-20"
+              className="bg-r-neutral-card-2 text-r-neutral-title-1 border border-transparent hover:border-blue-light hover:bg-blue-light hover:bg-opacity-20"
             >
               {item.title}
             </Field>

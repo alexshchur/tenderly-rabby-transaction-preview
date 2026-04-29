@@ -7,6 +7,9 @@ import { Account } from './AccountList';
 import * as Sentry from '@sentry/browser';
 import { KEYRING_CLASS } from '@/constant';
 import { useRabbyDispatch } from '@/ui/store';
+import { useTranslation } from 'react-i18next';
+import { isFunction } from 'lodash';
+import { useMemoizedFn } from 'ahooks';
 
 export const sleep = (ms: number) =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,7 +42,7 @@ export const fetchAccountsInfo = async (
         }
       }
 
-      let chains: Account['chains'];
+      let chains: Account['chains'] = [];
       try {
         chains = await wallet.openapi.usedChainList(account.address);
       } catch (e) {
@@ -58,11 +61,13 @@ export const fetchAccountsInfo = async (
       }
 
       // find firstTxTime
-      chains?.forEach((chain: any) => {
-        if (chain.born_at) {
-          firstTxTime = Math.min(firstTxTime ?? Infinity, chain.born_at);
-        }
-      });
+      if (isFunction(chains?.forEach)) {
+        chains?.forEach((chain: any) => {
+          if (chain.born_at) {
+            firstTxTime = Math.min(firstTxTime ?? Infinity, chain.born_at);
+          }
+        });
+      }
 
       const accountInfo: Account = {
         ...account,
@@ -84,36 +89,46 @@ const useGetCurrentAccounts = ({ keyringId, keyring }: StateProviderProps) => {
   const wallet = useWallet();
   const [loading, setLoading] = React.useState(false);
   const [accounts, setAccounts] = React.useState<Account[]>([]);
+  const [initialAccounts, setInitialAccounts] = React.useState<Account[]>([]);
+  const initialAccountsRef = React.useRef<Account[] | null>(null);
   const dispatch = useRabbyDispatch();
 
-  const getCurrentAccounts = React.useCallback(async () => {
-    setLoading(true);
-    const accounts: Account[] = [];
-    if (keyring === KEYRING_CLASS.MNEMONIC) {
-      const list = await dispatch.importMnemonics.getImportedAccounts({});
-      accounts.push(...list);
-    } else {
-      accounts.push(
-        ...(await wallet.requestKeyring(
-          keyring,
-          'getCurrentAccounts',
-          keyringId
-        ))
+  const getCurrentAccounts = React.useCallback(
+    async (options?: { resetInitialAccounts?: boolean }) => {
+      setLoading(true);
+      const accounts: Account[] = [];
+      if (keyring === KEYRING_CLASS.MNEMONIC) {
+        const list = await dispatch.importMnemonics.getImportedAccounts({});
+        accounts.push(...list);
+      } else {
+        accounts.push(
+          ...(await wallet.requestKeyring(
+            keyring,
+            'getCurrentAccounts',
+            keyringId
+          ))
+        );
+      }
+
+      // fetch aliasName
+      const accountsWithAliasName = await Promise.all(
+        accounts.map(async (account) => {
+          const aliasName = await wallet.getAlianName(account.address);
+          account.aliasName = aliasName;
+          return account;
+        })
       );
-    }
 
-    // fetch aliasName
-    const accountsWithAliasName = await Promise.all(
-      accounts.map(async (account) => {
-        const aliasName = await wallet.getAlianName(account.address);
-        account.aliasName = aliasName;
-        return account;
-      })
-    );
-
-    setAccounts(accountsWithAliasName);
-    setLoading(false);
-  }, []);
+      setAccounts(accountsWithAliasName);
+      if (options?.resetInitialAccounts || !initialAccountsRef.current) {
+        initialAccountsRef.current = accountsWithAliasName;
+        setInitialAccounts(accountsWithAliasName);
+      }
+      setLoading(false);
+      return accountsWithAliasName;
+    },
+    []
+  );
 
   const removeCurrentAccount = React.useCallback((address: string) => {
     setAccounts((accounts) => {
@@ -141,6 +156,7 @@ const useGetCurrentAccounts = ({ keyringId, keyring }: StateProviderProps) => {
     currentAccountsLoading: loading,
     getCurrentAccounts,
     currentAccounts: accounts,
+    initialAccounts,
     removeCurrentAccount,
     updateCurrentAccountAliasName,
   };
@@ -155,11 +171,25 @@ const useManagerTab = () => {
   };
 };
 
-const useHiddenInfo = () => {
-  const [hiddenInfo, setHiddenInfo] = React.useState(true);
+const useSelectedAccounts = () => {
+  const [selectedAccounts, setSelectedAccounts] = React.useState<Account[]>([]);
+
+  const updateSelectedAccountAliasName = useMemoizedFn(
+    (address: string, aliasName: string) => {
+      setSelectedAccounts((accounts) => {
+        return accounts.map((account) => {
+          if (isSameAddress(account.address, address)) {
+            account.aliasName = aliasName;
+          }
+          return account;
+        });
+      });
+    }
+  );
   return {
-    hiddenInfo,
-    setHiddenInfo,
+    selectedAccounts,
+    setSelectedAccounts,
+    updateSelectedAccountAliasName,
   };
 };
 
@@ -168,6 +198,7 @@ const useHiddenInfo = () => {
 const useTaskQueue = ({ keyring }) => {
   const queueRef = React.useRef(new PQueue({ concurrency: 1 }));
   const history = useHistory();
+  const { t } = useTranslation();
 
   const createTask = React.useCallback(async (task: () => Promise<any>) => {
     return queueRef.current.add(task);
@@ -178,8 +209,7 @@ const useTaskQueue = ({ keyring }) => {
       console.error(e);
       Sentry.captureException(e);
       message.error({
-        content:
-          'Unable to connect to Hardware wallet. Please try to re-connect.',
+        content: t('page.newAddress.hd.tooltip.disconnected'),
         key: 'ledger-error',
       });
       if (keyring !== KEYRING_CLASS.HARDWARE.GRIDPLUS) {
@@ -203,12 +233,15 @@ export interface StateProviderProps {
   keyringId: number | null;
   keyring: string;
   brand?: string;
+  isLazyImport?: boolean;
+  children?: React.ReactNode;
+  onDone?(): void;
 }
 
 export const HDManagerStateContext = React.createContext<
   ReturnType<typeof useGetCurrentAccounts> &
     ReturnType<typeof useManagerTab> &
-    ReturnType<typeof useHiddenInfo> &
+    ReturnType<typeof useSelectedAccounts> &
     ReturnType<typeof useTaskQueue> &
     StateProviderProps
 >({} as any);
@@ -217,16 +250,20 @@ export const HDManagerStateProvider: React.FC<StateProviderProps> = ({
   children,
   keyringId,
   keyring,
+  isLazyImport,
+  brand,
 }) => {
   return (
     <HDManagerStateContext.Provider
       value={{
         ...useGetCurrentAccounts({ keyringId, keyring }),
         ...useManagerTab(),
-        ...useHiddenInfo(),
+        ...useSelectedAccounts(),
         ...useTaskQueue({ keyring }),
         keyringId,
         keyring,
+        isLazyImport,
+        brand,
       }}
     >
       {children}

@@ -1,25 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { groupBy } from 'lodash';
-import clsx from 'clsx';
-import { SafeInfo } from '@rabby-wallet/gnosis-sdk/src/api';
+import { BasicSafeInfo, SafeMessage } from '@rabby-wallet/gnosis-sdk';
 import { Button } from 'antd';
 import { Account } from 'background/service/preference';
-
-import { useWallet, isSameAddress } from 'ui/utils';
-import { NameAndAddress } from 'ui/component';
-
-import { KEYRING_TYPE, KEYRING_CLASS } from 'consts';
-import FieldCheckbox from 'ui/component/FieldCheckbox';
-import IconTagYou from 'ui/assets/tag-you.svg';
-import IconTagNotYou from 'ui/assets/tag-notyou.svg';
-import { BasicSafeInfo } from '@rabby-wallet/gnosis-sdk';
+import clsx from 'clsx';
+import { groupBy } from 'lodash';
+import React, { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { isSameAddress, useWallet } from 'ui/utils';
+import { AddressItem, ownerPriority } from './DrawerAddressItem';
 
 interface GnosisDrawerProps {
   // safeInfo: SafeInfo;
   safeInfo: BasicSafeInfo;
   onCancel(): void;
-  onConfirm(account: Account, isNew?: boolean): Promise<void>;
+  onConfirm(account: Account, isNew?: boolean): Promise<void> | void;
+  confirmations?: SafeMessage['confirmations'];
 }
 
 interface Signature {
@@ -27,64 +21,12 @@ interface Signature {
   signer: string;
 }
 
-interface AddressItemProps {
-  account: Account;
-  signed: boolean;
-  onSelect(account: Account): void;
-  checked: boolean;
-}
-
-const ownerPriority = [
-  KEYRING_TYPE.SimpleKeyring,
-  KEYRING_CLASS.MNEMONIC,
-  KEYRING_CLASS.HARDWARE.LEDGER,
-  KEYRING_CLASS.HARDWARE.ONEKEY,
-  KEYRING_CLASS.HARDWARE.TREZOR,
-  KEYRING_CLASS.HARDWARE.BITBOX02,
-  KEYRING_CLASS.WALLETCONNECT,
-  KEYRING_CLASS.WATCH,
-];
-
-const AddressItem = ({
-  account,
-  signed,
-  onSelect,
-  checked,
-}: AddressItemProps) => {
-  return (
-    <FieldCheckbox
-      className={clsx(
-        'item',
-        !account.type || signed ? 'cursor-default' : 'cursor-pointer',
-        {
-          disabled: !account.type,
-        }
-      )}
-      showCheckbox={!!account.type}
-      rightSlot={
-        signed ? <span className="text-green text-14">Signed</span> : undefined
-      }
-      onChange={(checked) => checked && onSelect(account)}
-      checked={checked}
-      disable={!account.type || signed}
-    >
-      <NameAndAddress
-        address={account.address}
-        nameClass={clsx(
-          signed ? 'max-100' : 'max-115',
-          !account.type && 'no-name'
-        )}
-        noNameClass="no-name"
-      />
-      <img
-        src={account.type ? IconTagYou : IconTagNotYou}
-        className="icon icon-tag"
-      />
-    </FieldCheckbox>
-  );
-};
-
-const GnosisDrawer = ({ safeInfo, onCancel, onConfirm }: GnosisDrawerProps) => {
+const GnosisDrawer = ({
+  safeInfo,
+  onCancel,
+  onConfirm,
+  confirmations,
+}: GnosisDrawerProps) => {
   const wallet = useWallet();
   const { t } = useTranslation();
   const [signatures, setSignatures] = useState<Signature[]>([]);
@@ -97,7 +39,9 @@ const GnosisDrawer = ({ safeInfo, onCancel, onConfirm }: GnosisDrawerProps) => {
     const ownersInWallet = accounts.filter((account) =>
       owners.find((owner) => isSameAddress(account.address, owner))
     );
-    const groupOwners = groupBy(ownersInWallet, 'address');
+    const groupOwners = groupBy(ownersInWallet, (item) =>
+      item.address.toLowerCase()
+    );
     const result = Object.keys(groupOwners).map((address) => {
       let target = groupOwners[address][0];
       if (groupOwners[address].length === 1) {
@@ -125,6 +69,9 @@ const GnosisDrawer = ({ safeInfo, onCancel, onConfirm }: GnosisDrawerProps) => {
         brandName: '',
       })),
     ]);
+    if (result.length === 1) {
+      setCheckedAccount(result[0]);
+    }
   };
 
   const handleSelectAccount = (account: Account) => {
@@ -144,8 +91,6 @@ const GnosisDrawer = ({ safeInfo, onCancel, onConfirm }: GnosisDrawerProps) => {
   };
 
   const init = async () => {
-    const sigs = await wallet.getGnosisTransactionSignatures();
-    setSignatures(sigs);
     sortOwners();
   };
 
@@ -153,14 +98,31 @@ const GnosisDrawer = ({ safeInfo, onCancel, onConfirm }: GnosisDrawerProps) => {
     init();
   }, []);
 
+  useEffect(() => {
+    if (confirmations) {
+      setSignatures(
+        confirmations.map((item) => {
+          return {
+            signer: item.owner,
+            data: item.signature,
+          };
+        })
+      );
+    } else {
+      wallet.getGnosisTransactionSignatures().then(setSignatures);
+    }
+  }, [confirmations]);
+
   return (
     <div className="gnosis-drawer-container">
-      <div className="title">
+      <div className="text-[18px] leading-[21px] font-medium text-r-neutral-title1 text-center mb-[16px]">
         {safeInfo.threshold - signatures.length > 0
-          ? `${safeInfo.threshold - signatures.length} more confirmation needed`
-          : t('Enough signature collected')}
+          ? t('page.signTx.moreSafeSigNeeded', [
+              safeInfo.threshold - signatures.length,
+            ])
+          : t('page.signTx.enoughSafeSigCollected')}
       </div>
-      <div className="list">
+      <div className="list space-y-[12px]">
         {ownerAccounts.map((owner) => (
           <AddressItem
             key={owner.address}
@@ -173,23 +135,43 @@ const GnosisDrawer = ({ safeInfo, onCancel, onConfirm }: GnosisDrawerProps) => {
             onSelect={handleSelectAccount}
             checked={
               checkedAccount
-                ? isSameAddress(owner.address, checkedAccount.address)
+                ? isSameAddress(owner.address, checkedAccount.address) &&
+                  !signatures.find((sig) =>
+                    isSameAddress(sig.signer, checkedAccount.address)
+                  )
                 : false
             }
           />
         ))}
       </div>
-      <div className="footer">
-        <Button type="primary" onClick={onCancel}>
-          {t('Back')}
+      <div className="footer mx-[-20px] mb-[-24px] py-[16px] px-[20px] border-t-[1px] border-t-r-neutral-card2 bg-r-neutral-card1">
+        <Button
+          type="primary"
+          ghost
+          onClick={onCancel}
+          className={clsx(
+            'h-[48px]',
+            'border-blue-light text-blue-light',
+            'hover:bg-[#8697FF1A] active:bg-[#0000001A]',
+            'rounded-[8px]',
+            'before:content-none'
+          )}
+        >
+          {t('global.backButton')}
         </Button>
         <Button
           type="primary"
           onClick={handleConfirm}
-          disabled={!checkedAccount}
+          disabled={
+            !checkedAccount ||
+            !!signatures.find((sig) =>
+              isSameAddress(sig.signer, checkedAccount.address)
+            )
+          }
           loading={isLoading}
+          className="h-[48px]"
         >
-          {t('Proceed')}
+          {t('global.proceedButton')}
         </Button>
       </div>
     </div>

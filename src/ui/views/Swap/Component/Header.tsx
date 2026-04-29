@@ -1,53 +1,95 @@
-import { ReactComponent as IconSwapSettings } from '@/ui/assets/swap/settings.svg';
-import { ReactComponent as IconSwapHistory } from '@/ui/assets/swap/history.svg';
+import { ReactComponent as RcIconSwapHistory } from '@/ui/assets/swap/history.svg';
 
 import { PageHeader } from '@/ui/component';
 import React, { useCallback, useState } from 'react';
-import { TradingSettings } from './TradingSettings';
-import { useSetSettingVisible, useSettingVisible } from '../hooks';
+import { useRabbyFee, useSetRabbyFee } from '../hooks';
 import { SwapTxHistory } from './History';
+import { useTranslation } from 'react-i18next';
+import { useRabbyDispatch } from '@/ui/store';
+import { RabbyFeePopup } from './RabbyFeePopup';
+import { useHistory } from 'react-router-dom';
+import { getUiType } from '@/ui/utils';
+import { ReactComponent as RcIconFullscreen } from '@/ui/assets/fullscreen-cc.svg';
+const isTab = getUiType().isTab;
+const isDesktop = getUiType().isDesktop;
 
-export const Header = () => {
-  const visible = useSettingVisible();
-  const setVisible = useSetSettingVisible();
+const getContainer = isTab
+  ? '.js-rabby-popup-container'
+  : isDesktop
+  ? '.js-rabby-desktop-swap-container'
+  : undefined;
 
+export const Header = ({
+  onOpenInTab,
+  noShowHeader = false,
+}: {
+  onOpenInTab?(): void;
+  noShowHeader: boolean;
+}) => {
   const [historyVisible, setHistoryVisible] = useState(false);
+  const { t } = useTranslation();
+
+  const { visible, feeDexDesc, dexName } = useRabbyFee();
+  const setRabbyFeeVisible = useSetRabbyFee();
+
+  const openHistory = useCallback(() => {
+    setHistoryVisible(true);
+  }, []);
+  const history = useHistory();
+
+  const gotoDashboard = () => {
+    history.push('/dashboard');
+  };
+
+  const dispath = useRabbyDispatch();
+
+  React.useEffect(() => {
+    dispath.swap.getSwapSupportedDEXList();
+  }, []);
 
   return (
     <>
-      <PageHeader
-        className="mx-[20px] pt-[20px] mb-[16px]"
-        forceShowBack
-        rightSlot={
-          <div className="flex items-center gap-20 absolute bottom-0 right-0">
-            <IconSwapHistory
-              className="cursor-pointer"
-              onClick={useCallback(() => {
-                setHistoryVisible(true);
-              }, [])}
-            />
-            <IconSwapSettings
-              className="cursor-pointer"
-              onClick={useCallback(() => {
-                setVisible(true);
-              }, [])}
-            />
-          </div>
-        }
-      >
-        Swap
-      </PageHeader>
-      <TradingSettings
-        visible={visible}
-        onClose={useCallback(() => {
-          setVisible(false);
-        }, [])}
-      />
+      {!noShowHeader && (
+        <PageHeader
+          className="mx-[20px] mb-[5px]"
+          forceShowBack={!isTab}
+          onBack={gotoDashboard}
+          canBack={!isTab}
+          isShowAccount
+          rightSlot={
+            <div className="flex items-center gap-[16px] absolute top-[50%] translate-y-[-50%] right-0">
+              {isTab ? null : (
+                <div
+                  className="text-r-neutral-title1 cursor-pointer relative hit-slop-8"
+                  onClick={() => {
+                    onOpenInTab?.();
+                  }}
+                >
+                  <RcIconFullscreen />
+                </div>
+              )}
+              <div className="relative hit-slop-8" onClick={openHistory}>
+                <RcIconSwapHistory className="cursor-pointer" />
+              </div>
+            </div>
+          }
+        >
+          {t('page.swap.title')}
+        </PageHeader>
+      )}
       <SwapTxHistory
         visible={historyVisible}
         onClose={useCallback(() => {
           setHistoryVisible(false);
         }, [])}
+        getContainer={getContainer}
+      />
+      <RabbyFeePopup
+        visible={visible}
+        dexName={dexName}
+        feeDexDesc={feeDexDesc}
+        onClose={() => setRabbyFeeVisible({ visible: false })}
+        getContainer={getContainer}
       />
     </>
   );

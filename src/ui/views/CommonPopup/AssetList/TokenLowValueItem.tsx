@@ -8,6 +8,7 @@ import { splitNumberByStep, useCommonPopupView } from '@/ui/utils';
 import { Popup } from '@/ui/component';
 import { TokenTable } from './components/TokenTable';
 import { TokenListEmpty } from './TokenListEmpty';
+import { useTranslation } from 'react-i18next';
 
 export interface Props {
   className?: string;
@@ -15,6 +16,7 @@ export interface Props {
 }
 
 export const TokenLowValueItem: React.FC<Props> = ({ className, list }) => {
+  const { t } = useTranslation();
   const totalValue = React.useMemo(() => {
     return list
       ?.reduce((acc, item) => acc.plus(item._usdValue || 0), new BigNumber(0))
@@ -30,45 +32,55 @@ export const TokenLowValueItem: React.FC<Props> = ({ className, list }) => {
   }, [commonPopupVisible]);
 
   return (
-    <div className={clsx('flex justify-between items-center mt-8', className)}>
-      <div
-        className={clsx(
-          'text-black text-13',
-          'flex items-center',
-          'cursor-pointer',
-          'hover:opacity-60'
-        )}
-        onClick={() => setVisible(true)}
-      >
+    <div
+      className={clsx(
+        'flex justify-between border border-transparent items-center mt-8 bg-r-neutral-card1 rounded-[8px] px-16',
+        'hover:border-blue-light hover:bg-blue-light hover:bg-opacity-10',
+        'cursor-pointer',
+        className
+      )}
+      onClick={() => setVisible(true)}
+    >
+      <div className={clsx('text-r-neutral-foot text-13', 'flex items-center')}>
         <LowValueSVG className="mr-12" />
-        <div className="font-medium">{list?.length} low value assets</div>
-        <LowValueArrowSVG />
+        <div className="text-r-neutral-foot">
+          {t('page.dashboard.assets.table.lowValueAssets', {
+            count: list?.length,
+          })}
+        </div>
       </div>
-      <div className="text-13 text-gray-title font-medium">
+      <div className="text-13 text-r-neutral-foot font-medium">
         ${splitNumberByStep(totalValue?.toFixed(2) ?? '0')}
       </div>
 
       <Popup
         title={
           <div className="font-medium text-20">
-            {list?.length} low value assets
+            {t('page.dashboard.assets.table.lowValueAssets', {
+              count: list?.length,
+            })}
           </div>
         }
-        height={494}
+        isNew
+        height={500}
         visible={visible}
         closable
         push={false}
-        onClose={() => setVisible(false)}
+        onClose={(e) => {
+          e?.stopPropagation();
+          setVisible(false);
+        }}
         bodyStyle={{
           padding: '20px 20px 0',
         }}
+        isSupportDarkMode
       >
         {list?.length ? (
           <TokenTable
             list={list}
             virtual={{
-              height: 403,
-              itemSize: 51,
+              height: 430,
+              itemSize: 68,
             }}
           />
         ) : (

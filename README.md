@@ -86,19 +86,19 @@ Now, you'll need to get the code for the app onto your local machine. You can do
 
 To clone the repository, use the following command:
 
-```
+```sh
 git clone https://github.com/Tenderly/tenderly-rabby-transaction-preview.git
 ```
 
 Then navigate to the root directory of the project:
 
-```
+```sh
 cd tenderly-rabby-transaction-preview
 ```
 
 Start the app with:
 
-```
+```sh
 yarn build:dev
 ```
 

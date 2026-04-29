@@ -1,8 +1,9 @@
 import React, { forwardRef, useImperativeHandle, useRef } from 'react';
-import { Input, Tooltip } from 'antd';
+import { Input, Tooltip, InputRef as AntdInputRef } from 'antd';
 import clsx from 'clsx';
 import { NFTItem } from '@/background/service/openapi';
 import './style.less';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   onChange?(val: number): void;
@@ -42,13 +43,15 @@ const NumberInput = forwardRef<InputRef, Props>(
       onChange && onChange(value + 1);
     };
 
-    const inputEl = useRef<Input | null>(null);
+    const inputEl = useRef<AntdInputRef>(null);
 
     useImperativeHandle(ref, () => ({
       focus: () => {
         inputEl.current && inputEl.current.focus();
       },
     }));
+
+    const { t } = useTranslation();
 
     return (
       <div className="number-input">
@@ -71,8 +74,10 @@ const NumberInput = forwardRef<InputRef, Props>(
           })}
           title={
             nftItem.is_erc1155
-              ? `Your balance is ${nftItem.amount}`
-              : 'Only one NFT of ERC 721 can be sent at a time'
+              ? t('component.NFTNumberInput.erc1155Tips', {
+                  amount: nftItem.amount,
+                })
+              : t('component.NFTNumberInput.erc721Tips')
           }
         >
           <div

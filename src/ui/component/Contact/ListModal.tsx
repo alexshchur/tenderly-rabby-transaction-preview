@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Button, message } from 'antd';
+import { Button, DrawerProps, message } from 'antd';
 import styled from 'styled-components';
 import { useRabbyDispatch, useRabbySelector, connectStore } from 'ui/store';
 import { IDisplayedAccountWithBalance } from 'ui/models/accountToDisplay';
@@ -12,12 +12,14 @@ import { isSameAddress, useWallet } from 'ui/utils';
 import IconSuccess from 'ui/assets/success.svg';
 import './style.less';
 import clsx from 'clsx';
+import { useTranslation } from 'react-i18next';
 
 interface ListModalProps {
   address?: string;
   visible: boolean;
   onOk(account: UIContactBookItem): void;
   onCancel(): void;
+  getContainer?: DrawerProps['getContainer'];
 }
 
 const ListScrollWrapper = styled.div`
@@ -27,19 +29,25 @@ const ListScrollWrapper = styled.div`
 
 const ListFooterWrapper = styled.div`
   height: 80px;
-  padding: 20px 0;
+  padding: 20px;
   display: flex;
   justify-content: center;
-  position: fixed;
+  position: absolute;
   bottom: 0;
   left: 0;
   width: 100%;
 `;
 
-const ListModal = ({ visible, onOk, onCancel }: ListModalProps) => {
+const ListModal = ({
+  visible,
+  onOk,
+  onCancel,
+  getContainer,
+}: ListModalProps) => {
   const [editWhitelistVisible, setEditWhitelistVisible] = useState(false);
   const dispatch = useRabbyDispatch();
   const wallet = useWallet();
+  const { t } = useTranslation();
 
   const { accountsList, whitelist, whitelistEnabled } = useRabbySelector(
     (s) => ({
@@ -86,14 +94,13 @@ const ListModal = ({ visible, onOk, onCancel }: ListModalProps) => {
 
   const handleSaveWhitelist = async (list: string[]) => {
     await AuthenticationModalPromise({
-      confirmText: 'Confirm',
-      cancelText: 'Cancel',
-      title: 'Save to Whitelist',
+      confirmText: t('global.Confirm'),
+      cancelText: t('global.Cancel'),
+      title: t('component.Contact.ListModal.authModal.title'),
       validationHandler: async (password: string) =>
         wallet.setWhitelist(password, list),
       onFinished() {
         setEditWhitelistVisible(false);
-        dispatch.whitelist.getWhitelist();
         message.success({
           duration: 3,
           icon: <i />,
@@ -101,7 +108,7 @@ const ListModal = ({ visible, onOk, onCancel }: ListModalProps) => {
             <div>
               <div className="flex gap-4 mb-4">
                 <img src={IconSuccess} alt="" />
-                Whitelist Updated
+                {t('component.Contact.ListModal.whitelistUpdated')}
               </div>
             </div>
           ),
@@ -111,6 +118,7 @@ const ListModal = ({ visible, onOk, onCancel }: ListModalProps) => {
         // do nothing
       },
       wallet,
+      getContainer: getContainer,
     });
   };
 
@@ -123,20 +131,23 @@ const ListModal = ({ visible, onOk, onCancel }: ListModalProps) => {
       className="whitelist-selector"
       visible={visible}
       onClose={onCancel}
-      title="Select Address"
+      title={t('component.Contact.ListModal.title')}
       placement="bottom"
       height={580}
       closable
+      isSupportDarkMode
+      getContainer={getContainer}
+      push={false}
     >
       <div
         className={clsx('flex flex-col pb-80 h-full', {
-          'pb-20': !whitelistEnabled,
+          'pb-0': !whitelistEnabled,
         })}
       >
-        <div className="text-center mb-16 text-14 text-gray-content">
+        <div className="text-center mb-16 mx-[-10px] text-14 text-r-neutral-body">
           {whitelistEnabled
-            ? 'Whitelist is enabled. You can only send assets to a whitelisted address or you can disable it in "Settings"'
-            : 'Whitelist is disabled. You can send assets to any address'}
+            ? t('component.Contact.ListModal.whitelistEnabled')
+            : t('component.Contact.ListModal.whitelistDisabled')}
         </div>
         <ListScrollWrapper>
           {sortedAccountsList.map((account) => (
@@ -159,10 +170,10 @@ const ListModal = ({ visible, onOk, onCancel }: ListModalProps) => {
             <Button
               type="primary"
               size="large"
-              className="w-[169px] h-[40px] text-15"
+              className="w-[100%] h-[40px] text-15"
               onClick={handleClickEditWhitelist}
             >
-              Edit Whitelist
+              {t('component.Contact.ListModal.editWhitelist')}
             </Button>
           </ListFooterWrapper>
         )}

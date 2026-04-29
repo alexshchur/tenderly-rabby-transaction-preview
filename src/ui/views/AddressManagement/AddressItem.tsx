@@ -2,9 +2,7 @@ import { message, Tooltip } from 'antd';
 import clsx from 'clsx';
 import {
   BRAND_ALIAN_TYPE_TEXT,
-  KEYRINGS_LOGOS,
   KEYRING_CLASS,
-  KEYRING_ICONS,
   KEYRING_TYPE_TEXT,
   WALLET_BRAND_CONTENT,
 } from 'consts';
@@ -18,23 +16,20 @@ import React, {
   useState,
 } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { ReactComponent as IconArrowRight } from 'ui/assets/address/bold-right-arrow.svg';
-import { ReactComponent as IconDeleteAddress } from 'ui/assets/address/delete.svg';
+import { ReactComponent as RcIconArrowRight } from 'ui/assets/address/bold-right-arrow.svg';
+import { ReactComponent as RcIconDeleteAddress } from 'ui/assets/address/delete.svg';
 
 import { AddressViewer } from 'ui/component';
-import { isSameAddress, splitNumberByStep, useAlias } from 'ui/utils';
+import { splitNumberByStep, useAlias } from 'ui/utils';
 import IconSuccess from 'ui/assets/success.svg';
-import { useRabbyDispatch, useRabbySelector } from '@/ui/store';
+import { useRabbyDispatch } from '@/ui/store';
 import IconCheck from 'ui/assets/check.svg';
 
-import IconWhitelist from 'ui/assets/address/whitelist.svg';
 import { CopyChecked } from '@/ui/component/CopyChecked';
 import SkeletonInput from 'antd/lib/skeleton/Input';
-import { SessionSignal } from '@/ui/component/WalletConnect/SessionSignal';
-import { useWalletConnectIcon } from '@/ui/component/WalletConnect/useWalletConnectIcon';
-import { LedgerSignal } from '@/ui/component/ConnectStatus/LedgerSignal';
-import { GridPlusSignal } from '@/ui/component/ConnectStatus/GridPlusSignal';
 import { CommonSignal } from '@/ui/component/ConnectStatus/CommonSignal';
+import { useBrandIcon } from '@/ui/hooks/useBrandIcon';
+import { useHandleDeleteHdKeyringAndSimpleKeyringAccount } from '@/ui/hooks/useDeleteHdOrPrivateKeyringAddress';
 
 export interface AddressItemProps {
   balance: number;
@@ -72,22 +67,15 @@ const AddressItem = memo(
     onDelete,
   }: AddressItemProps) => {
     const { t } = useTranslation();
-    const { whitelistEnable, whiteList } = useRabbySelector((s) => ({
-      whitelistEnable: s.whitelist.enabled,
-      whiteList: s.whitelist.whitelist,
-    }));
 
-    const isInWhiteList = useMemo(() => {
-      return whiteList.some((e) => isSameAddress(e, address));
-    }, [whiteList, address]);
     const formatAddressTooltip = (type: string, brandName: string) => {
       if (KEYRING_TYPE_TEXT[type]) {
-        return t(KEYRING_TYPE_TEXT[type]);
+        return KEYRING_TYPE_TEXT[type];
       }
       if (WALLET_BRAND_CONTENT[brandName]) {
         return (
           <Trans
-            i18nKey="addressTypeTip"
+            i18nKey="page.manageAddress.addressTypeTip"
             values={{
               type: WALLET_BRAND_CONTENT[brandName].name,
             }}
@@ -103,14 +91,14 @@ const AddressItem = memo(
     const titleRef = useRef<HTMLDivElement>(null);
     const dispatch = useRabbyDispatch();
 
+    const {
+      deleteAccount: deletePrivateKeyOrHD,
+      renderDelete,
+    } = useHandleDeleteHdKeyringAndSimpleKeyringAccount();
+
     const canFastDeleteAccount = useMemo(
       // not privacy secret
-      () =>
-        onDelete
-          ? true
-          : isCurrentAccount
-          ? false
-          : ![KEYRING_CLASS.PRIVATE_KEY].includes(type),
+      () => (onDelete ? true : isCurrentAccount ? false : true),
       [type, onDelete]
     );
     const deleteAccount = async (e: React.MouseEvent<any>) => {
@@ -119,7 +107,21 @@ const AddressItem = memo(
         await onDelete();
         return;
       }
+
       if (canFastDeleteAccount) {
+        if (
+          type === KEYRING_CLASS.MNEMONIC ||
+          type === KEYRING_CLASS.PRIVATE_KEY
+        ) {
+          await deletePrivateKeyOrHD({
+            address,
+            type,
+            brandName,
+          });
+          await dispatch.accountToDisplay.getAllAccountsToDisplay();
+          return;
+        }
+
         await dispatch.addressManagement.removeAddress([
           address,
           type,
@@ -128,7 +130,7 @@ const AddressItem = memo(
         ]);
         message.success({
           icon: <img src={IconSuccess} className="icon icon-success" />,
-          content: t('Deleted'),
+          content: t('page.manageAddress.deleted'),
           duration: 0.5,
         });
       }
@@ -148,29 +150,18 @@ const AddressItem = memo(
       };
     }, []);
 
-    const brandIcon = useWalletConnectIcon({
+    const addressTypeIcon = useBrandIcon({
       address,
       brandName,
       type,
+      forceLight: isCurrentAccount,
     });
-
-    const addressTypeIcon = useMemo(
-      () =>
-        isCurrentAccount
-          ? brandIcon ||
-            WALLET_BRAND_CONTENT?.[brandName]?.image ||
-            KEYRINGS_LOGOS[type]
-          : brandIcon ||
-            KEYRING_ICONS[type] ||
-            WALLET_BRAND_CONTENT?.[brandName]?.image,
-      [type, brandName, brandIcon]
-    );
 
     return (
       <div className={clsx(className, 'rabby-address-item-container relative')}>
         {canFastDeleteAccount && (
           <div className="absolute icon-delete-container w-[20px] left-[-20px] h-full top-0  justify-center items-center">
-            <IconDeleteAddress
+            <RcIconDeleteAddress
               className="cursor-pointer w-[16px] h-[16px] icon icon-delete"
               onClick={deleteAccount}
             />
@@ -178,7 +169,7 @@ const AddressItem = memo(
         )}
         <div
           className={clsx({
-            'bg-blue-light hover:bg-blue-light rounded-[6px] overflow-hidden': isCurrentAccount,
+            'bg-blue-light rounded-[8px] overflow-hidden': isCurrentAccount,
           })}
         >
           <div
@@ -186,7 +177,10 @@ const AddressItem = memo(
               'rabby-address-item relative',
               isCurrentAccount
                 ? 'bg-blue-light hover:bg-blue-light pr-0'
-                : 'group hover:bg-blue-light hover:bg-opacity-[0.1]',
+                : 'group',
+              !isCurrentAccount &&
+                !enableSwitch &&
+                'hover:bg-r-blue-light-1 hover:bg-opacity-[0.1]',
               {
                 'is-switch': enableSwitch,
               }
@@ -195,7 +189,7 @@ const AddressItem = memo(
           >
             {/* {canFastDeleteAccount && (
               <div className="absolute hidden group-hover:flex w-[20px] left-[-20px] h-full top-0  justify-center items-center">
-                <IconDeleteAddress
+                <RcIconDeleteAddress
                   className="cursor-pointer w-[16px] h-[16px] icon icon-delete"
                   onClick={deleteAccount}
                 />
@@ -204,18 +198,22 @@ const AddressItem = memo(
             <div
               className={clsx(
                 'rabby-address-item-left',
+                !isCurrentAccount &&
+                  enableSwitch &&
+                  'hover:bg-r-blue-light-1 hover:bg-opacity-[0.1]',
                 isCurrentAccount && 'w-[calc(100%-34px)] pr-0'
               )}
             >
               <Tooltip
-                overlayClassName="rectangle addressType__tooltip"
+                overlayClassName="rectangle"
                 placement="topRight"
+                align={{ offset: [12, 5] }}
                 title={formatAddressTooltip(
                   type,
                   BRAND_ALIAN_TYPE_TEXT[brandName] || brandName
                 )}
               >
-                <div className="relative mr-[12px]">
+                <div className="relative flex-none">
                   <img
                     src={addressTypeIcon}
                     className={
@@ -233,7 +231,7 @@ const AddressItem = memo(
                 </div>
               </Tooltip>
 
-              <div className={clsx('rabby-address-item-content')}>
+              <div className={clsx('rabby-address-item-content ml-[12px]')}>
                 {
                   <div className="rabby-address-item-title" ref={titleRef}>
                     {
@@ -247,21 +245,6 @@ const AddressItem = memo(
                         >
                           {alias}
                         </div>
-                        {whitelistEnable && isInWhiteList && (
-                          <Tooltip
-                            overlayClassName="rectangle"
-                            placement="top"
-                            title={'Whitelisted address'}
-                          >
-                            <img
-                              src={IconWhitelist}
-                              className={clsx(
-                                'w-14 h-14',
-                                isCurrentAccount && 'brightness-[100]'
-                              )}
-                            />
-                          </Tooltip>
-                        )}
                         {extra}
                       </>
                     }
@@ -273,7 +256,9 @@ const AddressItem = memo(
                     showArrow={false}
                     className={clsx(
                       'subtitle',
-                      isCurrentAccount ? 'text-white' : 'text-gray-subTitle'
+                      isCurrentAccount
+                        ? 'text-r-neutral-title-2'
+                        : 'text-r-neutral-body'
                     )}
                   />
 
@@ -281,10 +266,13 @@ const AddressItem = memo(
                     addr={address}
                     className={clsx('w-[14px] h-[14px] ml-4 text-14 textgre')}
                     copyClassName={clsx(
-                      isCurrentAccount && 'text-white brightness-[100]'
+                      isCurrentAccount &&
+                        'text-r-neutral-title-2 brightness-[100]'
                     )}
                     checkedClassName={clsx(
-                      isCurrentAccount ? 'text-white' : 'text-[#00C087]'
+                      isCurrentAccount
+                        ? 'text-r-neutral-title-2'
+                        : 'text-[#00C087]'
                     )}
                   />
                   {!isCurrentAccount && (
@@ -301,7 +289,7 @@ const AddressItem = memo(
                           />
                         </>
                       ) : (
-                        <span className="ml-[12px] text-12 text-gray-subTitle">
+                        <span className="ml-[12px] text-12 text-r-neutral-body truncate flex-1 block">
                           ${splitNumberByStep(balance?.toFixed(2))}
                         </span>
                       )}
@@ -318,7 +306,7 @@ const AddressItem = memo(
                 </div>
               )}
               {isCurrentAccount && (
-                <div className="rabby-address-item-extra flex items-center justify-center">
+                <div className="rabby-address-item-extra flex items-center justify-center flex-1 overflow-hidden">
                   {isUpdatingBalance ? (
                     <>
                       <SkeletonInput
@@ -330,7 +318,7 @@ const AddressItem = memo(
                       />
                     </>
                   ) : (
-                    <span className="text-15 font-medium text-white">
+                    <span className="text-15 font-medium text-white w-full truncate text-right">
                       ${splitNumberByStep(balance?.toFixed(2))}
                     </span>
                   )}
@@ -358,12 +346,16 @@ const AddressItem = memo(
                     : 'text-blue-light hidden group-hover:flex'
                 )}
               >
-                <IconArrowRight />
+                <RcIconArrowRight />
               </div>
             </div>
           </div>
           {children}
         </div>
+
+        {renderDelete(() => {
+          dispatch.accountToDisplay.getAllAccountsToDisplay();
+        })}
       </div>
     );
   }
